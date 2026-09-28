@@ -33,9 +33,7 @@ help: ## Show this help message
 	@printf "  %-14s %s\n" "ch-query"      "Run a one-off query (Q=\"...\")"
 	@printf "  %-14s %s\n" "ch-migrate"    "Apply pending ClickHouse migrations"
 	@printf "  %-14s %s\n" "ch-migrations" "Show applied migrations"
-	@printf "
-Tests:
-"
+	@printf "\nTests:\n"
 	@printf "  %-20s %s\n" "run-tests"             "Run the workspace test suite (no Docker needed)"
 	@printf "  %-20s %s\n" "run-tests-integration" "Run the Redis-backed alerting tests (needs Docker)"
 	@printf "\nVariables:\n"
