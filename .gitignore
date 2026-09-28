@@ -4,5 +4,6 @@
 .tmp
 # Local configuration files
 config.toml
+!examples/*/config.toml
 .cursor
 rules.test.toml

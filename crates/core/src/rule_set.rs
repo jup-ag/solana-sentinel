@@ -2,10 +2,10 @@
 //! then build and bootstrap each configured rule.
 
 use crate::deps::ProgramDeps;
-use crate::prefilter::Prefilter;
 use crate::rule::{
-    DynGrpcRule, DynRpcRule, GrpcRule, RpcRule, RuleConfigError, SharedGrpcRule, SharedRpcRule,
+    BuiltStreamRule, DynGrpcRule, DynRpcRule, GrpcRule, RpcRule, RuleConfigError, SharedRpcRule,
 };
+use crate::subscription::Subscription;
 use crate::{BootstrapCtx, RawRuleMap};
 use async_trait::async_trait;
 use config::Value;
@@ -84,24 +84,30 @@ fn validate_stream<R: GrpcRule>(
     value: Value,
 ) -> Result<Box<dyn PendingStreamRule<R::Event, R::Deps>>, config::ConfigError> {
     let cfg: R::Config = value.try_deserialize()?;
-    let prefilter = R::static_prefilter(&cfg);
-    Ok(Box::new(PendingStream::<R> { cfg, prefilter }))
+    let subscription = R::static_subscription(&cfg);
+    let sweep_interval = R::sweep_interval(&cfg);
+    Ok(Box::new(PendingStream::<R> {
+        cfg,
+        subscription,
+        sweep_interval,
+    }))
 }
 
 #[async_trait]
 pub trait PendingStreamRule<Ev, D>: Send {
     fn id(&self) -> RuleId;
-    fn prefilter(&self) -> &Prefilter;
+    fn subscription(&self) -> &Subscription;
     async fn build(
         self: Box<Self>,
         deps: &D,
         ctx: &BootstrapCtx,
-    ) -> anyhow::Result<SharedGrpcRule<Ev>>;
+    ) -> anyhow::Result<BuiltStreamRule<Ev>>;
 }
 
 struct PendingStream<R: GrpcRule> {
     cfg: R::Config,
-    prefilter: Prefilter,
+    subscription: Subscription,
+    sweep_interval: Option<Duration>,
 }
 
 #[async_trait]
@@ -110,18 +116,21 @@ impl<R: GrpcRule> PendingStreamRule<R::Event, R::Deps> for PendingStream<R> {
         R::ID
     }
 
-    fn prefilter(&self) -> &Prefilter {
-        &self.prefilter
+    fn subscription(&self) -> &Subscription {
+        &self.subscription
     }
 
     async fn build(
         self: Box<Self>,
         deps: &R::Deps,
         ctx: &BootstrapCtx,
-    ) -> anyhow::Result<SharedGrpcRule<R::Event>> {
+    ) -> anyhow::Result<BuiltStreamRule<R::Event>> {
         let mut rule = R::build(self.cfg, deps)?;
         rule.bootstrap(ctx).await?;
-        Ok(Arc::new(rule) as Arc<dyn DynGrpcRule<R::Event>>)
+        Ok(BuiltStreamRule {
+            rule: Arc::new(rule) as Arc<dyn DynGrpcRule<R::Event>>,
+            sweep_interval: self.sweep_interval,
+        })
     }
 }
 
@@ -139,18 +148,18 @@ impl<Ev: Send + Sync + 'static, D: ProgramDeps> ValidatedStream<Ev, D> {
         self.rules.iter().map(|r| r.id()).collect()
     }
 
-    /// Union over the configured rules' static prefilters.
-    pub fn static_prefilter(&self) -> Prefilter {
-        self.rules.iter().fold(Prefilter::default(), |acc, r| {
-            acc.union(r.prefilter().clone())
+    /// Union over the configured rules' static subscriptions.
+    pub fn static_subscription(&self) -> Subscription {
+        self.rules.iter().fold(Subscription::default(), |acc, r| {
+            acc.union(r.subscription().clone())
         })
     }
 
-    /// Per-rule static prefilters, for `check` output.
-    pub fn prefilters(&self) -> Vec<(RuleId, Prefilter)> {
+    /// Per-rule static subscriptions, for `check` output.
+    pub fn subscriptions(&self) -> Vec<(RuleId, Subscription)> {
         self.rules
             .iter()
-            .map(|r| (r.id(), r.prefilter().clone()))
+            .map(|r| (r.id(), r.subscription().clone()))
             .collect()
     }
 
@@ -158,7 +167,7 @@ impl<Ev: Send + Sync + 'static, D: ProgramDeps> ValidatedStream<Ev, D> {
         self,
         deps: &D,
         ctx: &BootstrapCtx,
-    ) -> Result<Vec<SharedGrpcRule<Ev>>, RuleConfigError> {
+    ) -> Result<Vec<BuiltStreamRule<Ev>>, RuleConfigError> {
         let mut out = Vec::with_capacity(self.rules.len());
         for pending in self.rules {
             let id = pending.id();

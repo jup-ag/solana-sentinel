@@ -7,7 +7,7 @@ crates, and its `config.toml` / `rules.toml`.
 
 A program is a crate exporting one `spec()` that lists its parsers and the *rules* registered on
 them. The core crate (`solana_sentinel`) does everything else: typed config validation,
-shared-cache bootstrap, prefilter union, pipeline install, alert forwarding.
+shared-cache bootstrap, subscription union, pipeline install, alert forwarding.
 
 ```
 [dependencies]                                   # in a deployment's Cargo.toml
@@ -32,10 +32,13 @@ async fn main() -> anyhow::Result<()> {
 `my_monitor check` validates `rules.toml` + `config.toml` and prints the resolved
 subscriptions without connecting anywhere.
 
+`examples/spl-token-monitor/` is a complete, compiling deployment with a rule on every feed;
+`examples/README.md` walks through it.
+
 ## Run a deployment locally
 
 Copy `config.example.toml` to your deployment as `config.toml`, point `[rpc]` and
-`[geyser_source]` at your endpoints, use the `stdout` sink, and leave `[redis]` and
+`[data_source]` at your endpoints, use the `stdout` sink, and leave `[redis]` and
 `[observability.betterstack]` out: gates become in-memory and no heartbeat is sent.
 
 ## Add a rule
@@ -60,7 +63,8 @@ Copy `config.example.toml` to your deployment as `config.toml`, point `[rpc]` an
 
    impl GrpcRule for MyRule {                // stream-fed; or `RpcRule` for poll-fed
        type Event = <the parser's output>;
-       fn static_prefilter(cfg: &Self::Config) -> Prefilter { Prefilter::new().accounts(...) }
+       fn static_subscription(cfg: &Self::Config) -> Subscription { Subscription::new().accounts(...) }
+       // fn sweep_interval(cfg: &Self::Config) -> Option<Duration> + fn sweep(&self) for periodic checks
        fn evaluate(&self, ev: &Self::Event, ctx: &StreamCtx) -> Option<Alert> {
            Some(Alert::for_rule(Self::ID).severity(..).message(..).meta(k, v).key([..]).scope(ctx.tx_scope()).build())
        }
@@ -75,17 +79,21 @@ Copy `config.example.toml` to your deployment as `config.toml`, point `[rpc]` an
 
 Guidance:
 
-- `static_prefilter` must be a pure function of config and constants. Chain-discovered
+- `static_subscription` must be a pure function of config and constants. Chain-discovered
   accounts (vaults, PDAs found by scanning) belong on the program's `ProgramDeps`.
-- Prefilter semantics follow yellowstone: within one subscription `accounts`, `owners` and
-  data filters are ANDed. `Prefilter::owned(owner, [memcmp])` becomes its own subscription,
+- `Subscription` is the framework's ask; it expands into shipstern prefilters with yellowstone
+  semantics: within one prefilter `accounts`, `owners` and data filters are ANDed.
+  `Subscription::owned(owner, [memcmp])` becomes its own prefilter,
   so a rule can watch "every account of type X" and another "these pubkeys" on one pipeline.
 - Instruction pipelines are bundled across programs by shipstern; the framework re-checks each
   pipeline's transaction accounts locally, so a rule never sees another program's traffic.
-- Rules that compare against last-seen state should use `StateCache`; the default policy stores
-  an unknown key as the baseline instead of ignoring it forever.
+- `evaluate` takes `&self`; the handler and a rule's sweep loop may call it concurrently.
+  Rules that compare against last-seen state should use `StateCache` (locked inside, with a
+  policy for unknown keys: by default store as baseline and skip once).
+- Updates are evaluated in stream order: the runtime runs one worker, so a rule sees an
+  account's updates in the sequence the source delivered them.
 - `evaluate` is sync and must not do I/O. Anything it needs comes from the parser output,
-  the ctx, the config, or a cache seeded in `bootstrap`.
+  the ctx, the config, or state seeded in `bootstrap`.
 
 ## Add a program
 
@@ -109,27 +117,28 @@ pub fn spec() -> ProgramSpec {
 2. Add `<name>::spec` to the `PROGRAMS` list your binary passes to `run`.
 
 A program with a shared cache implements `ProgramDeps` and calls `.deps::<Cache>()` before
-registering pipelines. `dynamic_prefilter` feeds every pipeline; `refresh_interval` + `refresh`
+registering pipelines. `dynamic_subscription` feeds every pipeline; `refresh_interval` + `refresh`
 push a changed set to the live subscription without a restart.
 
 A poll-fed program implements `PollSource` and registers `RpcRule`s with
 `.poll(source, default_interval, rules)`. Rules on the same cadence share one
 `getMultipleAccounts` per tick.
 
-## Ingestion sources
+## Data sources
 
-Rules never see the transport. `[geyser_source]` picks it:
+Rules never see the transport. Every source implements shipstern's `SourceTrait` and runs in
+its runtime, which dispatches by filter name; `[data_source]` picks it:
 
-| `type` | Path | Notes |
+| `type` | Source | Notes |
 |---|---|---|
-| `yellowstone` (alias `shipstern`) | shipstern runtime, its own dispatch and reconnect | production default |
-| `grpc` | `solana_sentinel_ingest::GrpcSource` → framework `Dispatcher` | plain Yellowstone client, honours filter updates |
-| `websocket` | `solana_sentinel_ingest::WebsocketSource` → `Dispatcher` | PubSub `accountSubscribe` / `programSubscribe` / `logsSubscribe` + `getTransaction`; commitment ≥ `confirmed` |
+| `yellowstone_grpc` | `shipstern_yellowstone_grpc_source::YellowstoneGrpcSource` | server-side filter names, filter updates, reconnect with slot replay + dedup; production default |
+| `websocket` | `WebsocketSource` (`solana-sentinel-data-source`) | PubSub `accountSubscribe` / `programSubscribe` / `logsSubscribe` + `getTransaction`; commitment ≥ `confirmed` |
+| `kafka` | `KafkaSource` (`solana-sentinel-data-source`) | janus `raw.<program>.{accounts,transactions}` topics; slot feed synthesized from record slots |
 
-To add a transport, implement `solana_sentinel::StreamSource`: receive the named filter set
-(`shipstern_core::Filters`), emit `SourceUpdate { filters, update }` tagged with the names each
-update matched, and optionally react to later sets on the `watch` channel. The dispatcher does
-the rest, including building the instruction tree once per transaction.
+To add a transport, implement `shipstern::sources::SourceTrait` (and `FilterUpdateSource` if
+it can apply later filter sets): emit `SubscribeUpdate`s whose `filters` name the parsers they
+match. `data_source::matching::match_update` computes those names for records that arrive
+untagged. Add a config variant and a `launch.run::<MySource>(..)` arm in the service consumer.
 
 ## Checks
 

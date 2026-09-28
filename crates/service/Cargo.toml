@@ -8,7 +8,7 @@ publish.workspace = true
 [dependencies]
 alerting = { workspace = true }
 futures = { workspace = true }
-ingest = { workspace = true }
+data-source = { workspace = true }
 domain = { workspace = true }
 solana-sentinel = { workspace = true }
 observability = { workspace = true }
@@ -28,7 +28,6 @@ tracing-subscriber = { workspace = true }
 shipstern = { workspace = true }
 shipstern-core = { workspace = true }
 shipstern-slot-parser = { workspace = true }
-shipstern-yellowstone-grpc-source = { workspace = true }
 solana-rpc-client = { workspace = true }
 
 rustls = { workspace = true }

@@ -1,25 +1,26 @@
 [package]
-name = "solana-sentinel-ingest"
+name = "solana-sentinel-data-source"
 edition.workspace = true
 publish.workspace = true
 repository.workspace = true
 version.workspace = true
 
 [dependencies]
-solana-sentinel = { workspace = true }
-
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 base64 = "0.22"
 bs58 = { workspace = true }
+clap = { workspace = true }
 futures = { workspace = true }
+prost = { workspace = true }
+rdkafka = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
 tracing = { workspace = true }
 
+shipstern = { workspace = true }
 shipstern-core = { workspace = true }
-yellowstone-grpc-client = "13"
+shipstern-yellowstone-grpc-source = { workspace = true }
 yellowstone-grpc-proto = { workspace = true }
 solana-pubkey = { workspace = true }
 solana-pubsub-client = "3.1"
@@ -28,8 +29,8 @@ solana-rpc-client-api = "3.1"
 solana-account-decoder-client-types = { workspace = true }
 solana-transaction = "3.1"
 solana-message = "3.1"
+solana-commitment-config = "3.1"
 solana-signature = "3.1"
-solana-commitment-config = "3"
 solana-transaction-status-client-types = "3.1"
 
 [lints]

@@ -1,39 +1,17 @@
-//! Push a changed dynamic prefilter to the live subscription without a restart.
+//! Push a changed dynamic subscription to the live stream without a restart.
 
 use crate::parser::{scoped_parser_id, PipelineKind};
 use crate::spec::InstalledProgram;
 use crate::BootstrapCtx;
 use shipstern::RuntimeHandle;
-use shipstern_core::{Filters, PrefilterBuilder};
-use tokio::sync::watch;
+use shipstern_core::PrefilterBuilder;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{error, info, warn};
 
-/// How a refreshed filter set reaches the live subscription.
-#[derive(Clone)]
-pub enum FilterHandle {
-    /// Shipstern's runtime handle.
-    Shipstern(RuntimeHandle),
-    /// The watch channel a [`crate::source::StreamSource`] listens on.
-    Watch(watch::Sender<Filters>),
-}
-
-impl FilterHandle {
-    fn update(&self, edit: impl FnOnce(&mut Filters)) -> anyhow::Result<()> {
-        match self {
-            Self::Shipstern(h) => h.update_filters(edit).map_err(Into::into),
-            Self::Watch(tx) => {
-                tx.send_modify(edit);
-                Ok(())
-            }
-        }
-    }
-}
-
 pub fn spawn_refresh_loops(
     programs: Vec<InstalledProgram>,
-    handle: &FilterHandle,
+    handle: &RuntimeHandle,
     ctx: &BootstrapCtx,
     cancel_token: &CancellationToken,
     tracker: &TaskTracker,
@@ -42,7 +20,7 @@ pub fn spawn_refresh_loops(
         let Some(interval) = program.refresh_interval() else {
             continue;
         };
-        info!(program = %program.program, interval_secs = interval.as_secs(), "Starting prefilter refresh loop");
+        info!(program = %program.program, interval_secs = interval.as_secs(), "Starting subscription refresh loop");
         let handle = handle.clone();
         let ctx = ctx.clone();
         let cancel_token = cancel_token.clone();
@@ -51,7 +29,7 @@ pub fn spawn_refresh_loops(
         tick.reset(); // the first tick fires immediately otherwise; bootstrap just ran
 
         tracker.spawn(async move {
-            let mut last = program.deps.dynamic_prefilter();
+            let mut last = program.deps.dynamic_subscription();
             loop {
                 tokio::select! {
                     _ = cancel_token.cancelled() => break,
@@ -60,7 +38,7 @@ pub fn spawn_refresh_loops(
                             error!(program = %program.program, error = %e, "Deps refresh failed");
                             continue;
                         }
-                        let dynamic = program.deps.dynamic_prefilter();
+                        let dynamic = program.deps.dynamic_subscription();
                         if dynamic == last {
                             continue;
                         }
@@ -73,12 +51,12 @@ pub fn spawn_refresh_loops(
     }
 }
 
-fn push(program: &InstalledProgram, dynamic: &crate::Prefilter, handle: &FilterHandle) {
+fn push(program: &InstalledProgram, dynamic: &crate::Subscription, handle: &RuntimeHandle) {
     for stream in &program.streams {
-        let prefilter = stream.static_prefilter.clone().union(dynamic.clone());
+        let subscription = stream.static_subscription.clone().union(dynamic.clone());
         let subs: Vec<PrefilterBuilder> = match stream.kind {
-            PipelineKind::Account => prefilter.account_subscriptions(),
-            PipelineKind::Transaction => vec![prefilter.tx_subscription()],
+            PipelineKind::Account => subscription.account_prefilters(),
+            PipelineKind::Transaction => vec![subscription.tx_prefilter()],
             // Instruction parsers share one bundled filter across programs; not refreshable per program.
             PipelineKind::Instruction | PipelineKind::Poll => continue,
         };
@@ -86,11 +64,11 @@ fn push(program: &InstalledProgram, dynamic: &crate::Prefilter, handle: &FilterH
             warn!(
                 program = %program.program,
                 parser = %stream.base_id,
-                "Dynamic prefilter changed the subscription count; restart to apply"
+                "Dynamic subscription changed the prefilter count; restart to apply"
             );
             continue;
         }
-        let result = handle.update(|filters| {
+        let result = handle.update_filters(|filters| {
             for (i, sub) in subs.into_iter().enumerate() {
                 match sub.build() {
                     Ok(extra) => {
@@ -107,10 +85,10 @@ fn push(program: &InstalledProgram, dynamic: &crate::Prefilter, handle: &FilterH
         });
         match result {
             Ok(()) => {
-                info!(program = %program.program, parser = %stream.base_id, "Pushed refreshed prefilter")
+                info!(program = %program.program, parser = %stream.base_id, "Pushed refreshed subscription")
             }
             Err(e) => {
-                error!(program = %program.program, error = %e, "Failed to push refreshed prefilter")
+                error!(program = %program.program, error = %e, "Failed to push refreshed subscription")
             }
         }
     }

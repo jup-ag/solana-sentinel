@@ -10,9 +10,9 @@ use crate::parser::{
     scoped_parser_id, FrameworkParser, PipelineKind, PipelineSink, StreamInput, TxGate,
 };
 use crate::poll::{spawn_poll_loop, PollSource};
-use crate::prefilter::Prefilter;
-use crate::rule::{RuleConfigError, SharedGrpcRule};
+use crate::rule::{BuiltStreamRule, RuleConfigError};
 use crate::rule_set::{PollBucket, PollRules, StreamRules, ValidatedPoll, ValidatedStream};
+use crate::subscription::Subscription;
 use crate::sweep::spawn_sweep_loops;
 use crate::{BootstrapCtx, RawRuleMap};
 use async_trait::async_trait;
@@ -38,7 +38,7 @@ use tracing::{info, warn};
 #[async_trait]
 pub(crate) trait DynDeps: Send + Sync {
     fn as_any(&self) -> &(dyn Any + Send + Sync);
-    fn dynamic_prefilter(&self) -> Prefilter;
+    fn dynamic_subscription(&self) -> Subscription;
     fn refresh_interval(&self) -> Option<Duration>;
     async fn refresh(&self, ctx: &BootstrapCtx) -> anyhow::Result<()>;
 }
@@ -51,8 +51,8 @@ impl<D: ProgramDeps> DynDeps for DepsCell<D> {
         &self.0
     }
 
-    fn dynamic_prefilter(&self) -> Prefilter {
-        self.0.dynamic_prefilter()
+    fn dynamic_subscription(&self) -> Subscription {
+        self.0.dynamic_subscription()
     }
 
     fn refresh_interval(&self) -> Option<Duration> {
@@ -168,8 +168,8 @@ where
             parser: self.parser.id().into_owned(),
             rules: self.rules.ids(),
             stream: Some(StreamReport {
-                per_rule: self.rules.prefilters(),
-                union: self.rules.static_prefilter(),
+                per_rule: self.rules.subscriptions(),
+                union: self.rules.static_subscription(),
             }),
             polls: Vec::new(),
         }
@@ -180,11 +180,11 @@ where
         deps: &dyn DynDeps,
         ctx: &BootstrapCtx,
     ) -> Result<Box<dyn BuiltPipeline>, RuleConfigError> {
-        let static_prefilter = self.rules.static_prefilter();
+        let static_subscription = self.rules.static_subscription();
         let rules = self.rules.build(typed_deps::<D>(deps), ctx).await?;
         Ok(Box::new(StreamBuilt {
             parser: self.parser,
-            static_prefilter,
+            static_subscription,
             rules,
         }))
     }
@@ -192,8 +192,8 @@ where
 
 struct StreamBuilt<P: Parser> {
     parser: P,
-    static_prefilter: Prefilter,
-    rules: Vec<SharedGrpcRule<P::Output>>,
+    static_subscription: Subscription,
+    rules: Vec<BuiltStreamRule<P::Output>>,
 }
 
 impl<P> BuiltPipeline for StreamBuilt<P>
@@ -205,15 +205,16 @@ where
     fn install(self: Box<Self>, target: &mut InstallTarget<'_>) {
         let Self {
             parser,
-            static_prefilter,
-            rules,
+            static_subscription,
+            rules: built,
         } = *self;
+        let rules: Vec<_> = built.iter().map(|b| Arc::clone(&b.rule)).collect();
         let program = target.program;
         let base_id = parser.id().into_owned();
-        let prefilter = static_prefilter
+        let subscription = static_subscription
             .clone()
-            .union(target.dynamic_prefilter.clone());
-        let subs = <P::Input as StreamInput>::subscriptions(&prefilter);
+            .union(target.dynamic_subscription.clone());
+        let subs = <P::Input as StreamInput>::prefilters(&subscription);
 
         if subs.is_empty() {
             warn!(
@@ -226,8 +227,8 @@ where
         }
 
         let handler = RuleHandler::new(rules.clone(), target.alerts_tx.clone());
-        let gate =
-            <P::Input as StreamInput>::needs_gate().then(|| TxGate::from_prefilter(&prefilter));
+        let gate = <P::Input as StreamInput>::needs_gate()
+            .then(|| TxGate::from_subscription(&subscription));
         let subscriptions = subs.len();
 
         for (i, sub) in subs.into_iter().enumerate() {
@@ -236,7 +237,7 @@ where
                 scoped_parser_id(program, &base_id, i),
                 gate.clone(),
             );
-            <P::Input as StreamInput>::add_pipeline(&mut target.sink, scoped, handler.clone(), sub);
+            <P::Input as StreamInput>::add_pipeline(target.sink, scoped, handler.clone(), sub);
         }
         target.grpc_pipelines += subscriptions;
 
@@ -250,7 +251,7 @@ where
         );
 
         spawn_sweep_loops(
-            &rules,
+            &built,
             &target.alerts_tx,
             &target.cancel_token,
             target.tracker,
@@ -260,7 +261,7 @@ where
             kind: P::Input::KIND,
             base_id,
             parser_prefilter: parser.prefilter(),
-            static_prefilter,
+            static_subscription,
             subscriptions,
         });
     }
@@ -462,7 +463,7 @@ impl<D: ProgramDeps> ProgramBuilder<D> {
         self.stream(parser, rules)
     }
 
-    /// An instruction pipeline, gated locally on the transaction accounts of its prefilter.
+    /// An instruction pipeline, gated locally on the transaction accounts of its subscription.
     #[must_use]
     pub fn instruction<P>(self, parser: P, rules: StreamRules<P::Output, D>) -> Self
     where
@@ -573,10 +574,10 @@ impl BootstrappedProgram {
         self.program
     }
 
-    /// Add the stream pipelines to the runtime builder and spawn poll / sweep loops.
+    /// Add the stream pipelines to the dispatcher and spawn poll / sweep loops.
     pub fn install(self, target: &mut InstallTarget<'_>) -> InstalledProgram {
         target.program = self.program;
-        target.dynamic_prefilter = self.deps.dynamic_prefilter();
+        target.dynamic_subscription = self.deps.dynamic_subscription();
         target.installed = Vec::new();
         for pipeline in self.pipelines {
             pipeline.install(target);
@@ -589,22 +590,22 @@ impl BootstrappedProgram {
     }
 }
 
-/// Everything installing needs, plus the sink the stream pipelines accumulate into.
+/// Everything installing needs, plus the runtime builder the stream pipelines go into.
 pub struct InstallTarget<'a> {
-    pub(crate) sink: PipelineSink,
+    pub(crate) sink: &'a mut dyn PipelineSink,
     pub(crate) rpc: Arc<RpcClient>,
     pub(crate) alerts_tx: mpsc::Sender<Alert>,
     pub(crate) cancel_token: CancellationToken,
     pub(crate) tracker: &'a TaskTracker,
     grpc_pipelines: usize,
     program: Program,
-    dynamic_prefilter: Prefilter,
+    dynamic_subscription: Subscription,
     installed: Vec<InstalledStream>,
 }
 
 impl<'a> InstallTarget<'a> {
     pub fn new(
-        sink: PipelineSink,
+        sink: &'a mut dyn PipelineSink,
         rpc: Arc<RpcClient>,
         alerts_tx: mpsc::Sender<Alert>,
         cancel_token: CancellationToken,
@@ -618,14 +619,14 @@ impl<'a> InstallTarget<'a> {
             tracker,
             grpc_pipelines: 0,
             program: Program::new(""),
-            dynamic_prefilter: Prefilter::default(),
+            dynamic_subscription: Subscription::default(),
             installed: Vec::new(),
         }
     }
 
-    /// The sink with every stream pipeline added, and how many were added.
-    pub fn finish(self) -> (PipelineSink, usize) {
-        (self.sink, self.grpc_pipelines)
+    /// How many stream pipelines were added to the sink.
+    pub fn finish(self) -> usize {
+        self.grpc_pipelines
     }
 }
 
@@ -634,7 +635,7 @@ pub(crate) struct InstalledStream {
     pub kind: PipelineKind,
     pub base_id: String,
     pub parser_prefilter: shipstern_core::Prefilter,
-    pub static_prefilter: Prefilter,
+    pub static_subscription: Subscription,
     pub subscriptions: usize,
 }
 
@@ -671,8 +672,8 @@ pub struct PipelineReport {
 }
 
 pub struct StreamReport {
-    pub per_rule: Vec<(RuleId, Prefilter)>,
-    pub union: Prefilter,
+    pub per_rule: Vec<(RuleId, Subscription)>,
+    pub union: Subscription,
 }
 
 pub struct PollReport {
@@ -712,12 +713,12 @@ impl Display for ProgramReport {
     }
 }
 
-fn describe(pf: &Prefilter) -> String {
+fn describe(sub: &Subscription) -> String {
     let mut parts = Vec::new();
-    if !pf.accounts.is_empty() {
-        parts.push(format!("accounts={}", pf.accounts.len()));
+    if !sub.accounts.is_empty() {
+        parts.push(format!("accounts={}", sub.accounts.len()));
     }
-    for owned in &pf.owned {
+    for owned in &sub.owned {
         parts.push(format!(
             "owners={:?} filters={}",
             owned
@@ -728,11 +729,11 @@ fn describe(pf: &Prefilter) -> String {
             owned.filters.len()
         ));
     }
-    if !pf.tx_accounts_include.is_empty() {
-        parts.push(format!("tx_include={}", pf.tx_accounts_include.len()));
+    if !sub.tx_accounts_include.is_empty() {
+        parts.push(format!("tx_include={}", sub.tx_accounts_include.len()));
     }
-    if !pf.tx_accounts_required.is_empty() {
-        parts.push(format!("tx_required={}", pf.tx_accounts_required.len()));
+    if !sub.tx_accounts_required.is_empty() {
+        parts.push(format!("tx_required={}", sub.tx_accounts_required.len()));
     }
     if parts.is_empty() {
         "(empty)".to_string()
@@ -772,8 +773,8 @@ mod tests {
     impl GrpcRule for AnyIx {
         type Event = RawInstruction;
 
-        fn static_prefilter(_: &NoConfig) -> Prefilter {
-            Prefilter::new().tx_accounts_include([WATCHED])
+        fn static_subscription(_: &NoConfig) -> Subscription {
+            Subscription::new().tx_accounts_include([WATCHED])
         }
 
         fn evaluate(&self, ix: &RawInstruction, ctx: &StreamCtx) -> Option<Alert> {
@@ -787,7 +788,7 @@ mod tests {
         }
     }
 
-    /// validate → static prefilter → build → handler evaluates and forwards, with `tx_sig` filled in.
+    /// validate → static subscription → build → handler evaluates and forwards, with `tx_sig` filled in.
     #[tokio::test]
     async fn validated_rule_fires_through_handler() {
         let spec = ProgramSpec::builder(PROGRAM)

@@ -17,7 +17,6 @@ solana-account = { workspace = true }
 solana-rpc-client = { workspace = true }
 shipstern = { workspace = true }
 shipstern-core = { workspace = true }
-shipstern-yellowstone-grpc-source = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }

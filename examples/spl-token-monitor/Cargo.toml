@@ -1,0 +1,35 @@
+# An example deployment: one program crate (SPL Token) with a rule on each feed,
+# and the binary that runs it. A real deployment lives in its own workspace and
+# pulls the framework crates by git instead of by path.
+[package]
+name = "spl-token-monitor-example"
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "spl-token-monitor"
+path = "src/main.rs"
+
+[dependencies]
+solana-sentinel = { workspace = true }
+solana-sentinel-service = { workspace = true }
+
+shipstern-spl-token-parser = { workspace = true }
+solana-account = { workspace = true }
+solana-program-pack = { workspace = true }
+solana-pubkey = { workspace = true }
+spl-token-interface = { workspace = true }
+
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+solana-sentinel = { workspace = true, features = ["testing"] }
+solana-program-option = "3"
+
+[lints]
+workspace = true

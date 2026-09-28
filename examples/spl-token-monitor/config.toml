@@ -1,0 +1,17 @@
+# Minimal local config: stdout sink, no Redis, no heartbeat. See the root
+# config.example.toml for every setting and the other data source types.
+
+[data_source]
+type = "yellowstone_grpc"
+endpoint = "https://your-yellowstone-endpoint:443"
+token = "REPLACE_ME"
+
+[rpc]
+url = "https://api.mainnet-beta.solana.com"
+
+[observability.server]
+bind_addr = "127.0.0.1:8080"
+
+[[sinks]]
+type = "stdout"
+id = "stdout"

@@ -1,28 +1,29 @@
 //! Steps 4–6 of startup: bootstrap every validated program concurrently, install
 //! their pipelines into one shipstern runtime plus poll / sweep loops, run it.
 
-use crate::config::service::{GeyserSourceConfig, YellowstoneConfig};
+use crate::config::service::{BufferSettings, DataSourceConfig};
 use crate::config::SentinelConfig;
 use anyhow::Result;
+use data_source::{
+    KafkaConfig, KafkaSource, WebsocketConfig, WebsocketSource, YellowstoneGrpcConfig,
+    YellowstoneGrpcSource,
+};
 use domain::alert::Alert;
 use futures::future::try_join_all;
-use ingest::{GrpcSource, WebsocketSource};
 use observability::slot_tracker::SlotTracker;
 use shipstern::config::{BufferConfig, ShipsternConfig};
 use shipstern::filter_pipeline::FilterPipeline;
+use shipstern::sources::FilterUpdateSource;
 use shipstern::{CommitmentLevel, Runtime};
 use shipstern_core::Prefilter;
 use shipstern_slot_parser::SlotParser;
-use shipstern_yellowstone_grpc_source::{YellowstoneGrpcConfig, YellowstoneGrpcSource};
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sentinel::refresh::spawn_refresh_loops;
 use solana_sentinel::{
-    BootstrapCtx, Dispatcher, FilterHandle, InstallTarget, PipelineSink, StreamSource,
-    ValidatedProgram,
+    BootstrapCtx, BootstrappedProgram, InstallTarget, PipelineSink, ValidatedProgram,
 };
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -87,139 +88,128 @@ impl ConsumerService {
         let bootstrapped = try_join_all(programs.into_iter().map(|p| p.bootstrap(&ctx))).await?;
         info!("Finished bootstrapping programs in {:.2?}", start.elapsed());
 
-        // Shipstern runs its own dispatch; every other source feeds the framework dispatcher.
-        let mut sink = match config.geyser_source() {
-            GeyserSourceConfig::Yellowstone(_) => {
-                PipelineSink::Shipstern(Runtime::<YellowstoneGrpcSource>::builder())
-            }
-            GeyserSourceConfig::Grpc(_) | GeyserSourceConfig::Websocket(_) => {
-                PipelineSink::Dispatcher(Dispatcher::new())
-            }
-        };
-        // Slot pipeline first: tracks the latest slot for observability and slot-lag rules.
-        sink.slot(FilterPipeline::new(
-            SlotParser,
-            [slot_tracker.clone()],
-            Prefilter::builder().slots(),
-        ));
-
-        let mut target = InstallTarget::new(
-            sink,
-            Arc::clone(&rpc),
+        let launch = Launch {
+            bootstrapped,
+            ctx,
+            rpc,
             alerts_tx,
-            cancel_token.clone(),
+            slot_tracker,
+            cancel_token,
             tracker,
-        );
-        let installed: Vec<_> = bootstrapped
-            .into_iter()
-            .map(|p| p.install(&mut target))
-            .collect();
-        let (sink, grpc_pipelines) = target.finish();
-        info!(grpc_pipelines, "Stream pipelines installed");
-
-        let from_slot = Some(slot_tracker.load_last_seen_grpc_slot()).filter(|s| *s > 0);
-        let handle = match (sink, config.geyser_source()) {
-            (PipelineSink::Shipstern(builder), GeyserSourceConfig::Yellowstone(yc)) => {
-                let runtime = builder.build(yellowstone_runtime_config(yc.clone(), from_slot));
-                // Keep the handle so programs can push refreshed prefilters while the stream runs.
-                let handle = FilterHandle::Shipstern(runtime.handle());
-                spawn_runtime(runtime, cancel_token.clone(), tracker);
-                handle
-            }
-            (PipelineSink::Dispatcher(dispatcher), source_cfg) => {
-                let (source, channel_size): (Box<dyn StreamSource>, usize) = match source_cfg {
-                    GeyserSourceConfig::Grpc(g) => (
-                        Box::new(GrpcSource {
-                            endpoint: g.endpoint.clone(),
-                            x_token: g.token.clone(),
-                            timeout: Duration::from_secs(g.timeout_seconds),
-                            from_slot,
-                        }),
-                        g.sources_channel_size,
-                    ),
-                    GeyserSourceConfig::Websocket(w) => (
-                        Box::new(WebsocketSource::new(
-                            w.url.clone(),
-                            Arc::clone(&rpc),
-                            &w.commitment,
-                        )?),
-                        w.sources_channel_size,
-                    ),
-                    GeyserSourceConfig::Yellowstone(_) => unreachable!("sink chosen from source"),
-                };
-                spawn_dispatched_source(source, dispatcher, channel_size, &cancel_token, tracker)
-            }
-            (PipelineSink::Shipstern(_), _) => unreachable!("sink chosen from source"),
         };
+        let from_slot = Some(launch.slot_tracker.load_last_seen_grpc_slot()).filter(|s| *s > 0);
 
-        spawn_refresh_loops(installed, &handle, &ctx, &cancel_token, tracker);
-
+        // The runtime is generic over its source, so the config variant picks the type here.
+        match config.data_source() {
+            DataSourceConfig::YellowstoneGrpc(c) => launch.run::<YellowstoneGrpcSource>(
+                YellowstoneGrpcConfig {
+                    endpoint: c.endpoint.clone(),
+                    x_token: c.token.clone(),
+                    timeout: c.timeout_seconds,
+                    // Fastest path short of shred-level monitoring.
+                    commitment_level: Some(CommitmentLevel::Processed),
+                    from_slot,
+                    accounts_data_slice: Vec::new(),
+                    max_decoding_message_size: None,
+                    accept_compression: None,
+                    auto_reconnect: c.auto_reconnect,
+                    reconnect_max_retries: None,
+                    reconnect_slot_retention: None,
+                },
+                &c.buffer,
+            ),
+            DataSourceConfig::Websocket(c) => launch.run::<WebsocketSource>(
+                WebsocketConfig {
+                    url: c.url.clone(),
+                    rpc_url: config.rpc().url.to_string(),
+                    commitment: c.commitment.clone(),
+                },
+                &c.buffer,
+            ),
+            DataSourceConfig::Kafka(c) => launch.run::<KafkaSource>(
+                KafkaConfig {
+                    brokers: c.brokers.clone(),
+                    group_id: c.group_id.clone(),
+                    topics: c.topics.clone(),
+                    auto_offset_reset: c.auto_offset_reset.clone(),
+                    properties: c.properties.clone(),
+                },
+                &c.buffer,
+            ),
+        }
         Ok(())
     }
 }
 
-/// Run a [`StreamSource`] into the dispatcher; either side stopping shuts the service down.
-fn spawn_dispatched_source(
-    source: Box<dyn StreamSource>,
-    dispatcher: Dispatcher,
-    channel_size: usize,
-    cancel_token: &CancellationToken,
-    tracker: &TaskTracker,
-) -> FilterHandle {
-    let filters = dispatcher.filters();
-    info!(filters = ?filters.parser_ids().collect::<Vec<_>>(), "Subscribing through the framework dispatcher");
-    let (filters_tx, filters_rx) = watch::channel(filters.clone());
-    let (updates_tx, updates_rx) = mpsc::channel(channel_size);
-
-    Arc::new(dispatcher).spawn(updates_rx, cancel_token.clone(), tracker);
-
-    let cancel = cancel_token.clone();
-    tracker.spawn(async move {
-        match source
-            .run(filters, filters_rx, updates_tx, cancel.clone())
-            .await
-        {
-            Ok(()) => info!("Stream source stopped; shutting down service"),
-            Err(err) => error!(error = %err, "Stream source failed; shutting down service"),
-        }
-        cancel.cancel();
-    });
-
-    FilterHandle::Watch(filters_tx)
+/// Everything needed to build and run the runtime once the source type is known.
+struct Launch<'a> {
+    bootstrapped: Vec<BootstrappedProgram>,
+    ctx: BootstrapCtx,
+    rpc: Arc<RpcClient>,
+    alerts_tx: mpsc::Sender<Alert>,
+    slot_tracker: SlotTracker,
+    cancel_token: CancellationToken,
+    tracker: &'a TaskTracker,
 }
 
-fn yellowstone_runtime_config(
-    config: YellowstoneConfig,
-    from_slot: Option<u64>,
-) -> ShipsternConfig<YellowstoneGrpcConfig> {
-    ShipsternConfig {
-        source: YellowstoneGrpcConfig {
-            endpoint: config.endpoint,
-            x_token: config.token,
-            timeout: config.timeout_seconds,
-            // Specs request fastest path short of shred-level monitoring.
-            commitment_level: Some(CommitmentLevel::Processed),
-            from_slot,
-            accounts_data_slice: Vec::new(),
-            max_decoding_message_size: None,
-            accept_compression: None,
-            auto_reconnect: false,
-            reconnect_max_retries: None,
-            reconnect_slot_retention: None,
-        },
-        buffer: BufferConfig {
-            jobs: Some(config.jobs),
-            sources_channel_size: config.sources_channel_size,
-        },
+impl Launch<'_> {
+    fn run<S: FilterUpdateSource>(self, source: S::Config, buffer: &BufferSettings)
+    where
+        S::Config: Send,
+    {
+        let mut builder = Runtime::<S>::builder();
+        // Slot pipeline first: tracks the latest slot for observability and slot-lag rules.
+        builder.add_slot(Box::new(FilterPipeline::new(
+            SlotParser,
+            [self.slot_tracker.clone()],
+            Prefilter::builder().slots(),
+        )));
+
+        let mut target = InstallTarget::new(
+            &mut builder,
+            Arc::clone(&self.rpc),
+            self.alerts_tx,
+            self.cancel_token.clone(),
+            self.tracker,
+        );
+        let installed: Vec<_> = self
+            .bootstrapped
+            .into_iter()
+            .map(|p| p.install(&mut target))
+            .collect();
+        let grpc_pipelines = target.finish();
+        info!(grpc_pipelines, "Stream pipelines installed");
+
+        let runtime = builder.build(ShipsternConfig {
+            source,
+            buffer: BufferConfig {
+                // One worker: rules that compare against last-seen state need
+                // updates for an account in stream order, which more workers break.
+                jobs: Some(1),
+                sources_channel_size: buffer.sources_channel_size,
+            },
+        });
+        // Keep the handle so programs can push refreshed prefilters while the stream runs.
+        let handle = runtime.handle();
+        spawn_runtime(runtime, self.cancel_token.clone(), self.tracker);
+        spawn_refresh_loops(
+            installed,
+            &handle,
+            &self.ctx,
+            &self.cancel_token,
+            self.tracker,
+        );
     }
 }
 
 /// Run the shipstern runtime on the tracker; when it stops for any reason the service shuts down.
-fn spawn_runtime(
-    runtime: Runtime<YellowstoneGrpcSource>,
+fn spawn_runtime<S: FilterUpdateSource>(
+    runtime: Runtime<S>,
     cancel_token: CancellationToken,
     tracker: &TaskTracker,
-) {
+) where
+    S::Config: Send,
+{
     tracker.spawn(async move {
         tokio::select! {
             _ = cancel_token.cancelled() => info!("Cancellation requested; stopping consumer runtime"),

@@ -1,6 +1,7 @@
-//! The subscription a rule or program asks for, in framework terms.
+//! The subscription a rule or program asks for, in framework terms; distinct
+//! from `shipstern_core::Prefilter`, the wire-level filter it expands into.
 //!
-//! One [`Prefilter`] can expand to several yellowstone filters: the by-pubkey
+//! One [`Subscription`] can expand to several yellowstone filters: the by-pubkey
 //! account list is one, and each owner + data-filter set is another, because
 //! within a single yellowstone filter `account`, `owner` and `filters` are
 //! ANDed while lists inside one field are ORed.
@@ -18,7 +19,7 @@ pub struct OwnedAccounts {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Prefilter {
+pub struct Subscription {
     /// Account updates for exactly these pubkeys.
     pub accounts: HashSet<Pubkey>,
     /// Account updates selected by owner program (+ memcmp / datasize), one subscription each.
@@ -29,7 +30,7 @@ pub struct Prefilter {
     pub tx_accounts_required: HashSet<Pubkey>,
 }
 
-impl Prefilter {
+impl Subscription {
     pub fn new() -> Self {
         Self::default()
     }
@@ -74,7 +75,7 @@ impl Prefilter {
         }
     }
 
-    /// Union of two prefilters. Owned subscriptions with the same data filters merge their owners.
+    /// Union of two subscriptions. Owned subscriptions with the same data filters merge their owners.
     #[must_use]
     pub fn union(mut self, other: Self) -> Self {
         self.accounts.extend(other.accounts);
@@ -100,16 +101,16 @@ impl Prefilter {
             && self.tx_accounts_required.is_empty()
     }
 
-    pub fn has_account_subscription(&self) -> bool {
+    pub fn watches_accounts(&self) -> bool {
         !self.accounts.is_empty() || !self.owned.is_empty()
     }
 
-    pub fn has_tx_subscription(&self) -> bool {
+    pub fn watches_transactions(&self) -> bool {
         !self.tx_accounts_include.is_empty() || !self.tx_accounts_required.is_empty()
     }
 
     /// One shipstern prefilter per yellowstone account filter this expands to.
-    pub fn account_subscriptions(&self) -> Vec<PrefilterBuilder> {
+    pub fn account_prefilters(&self) -> Vec<PrefilterBuilder> {
         let mut subs = Vec::new();
         if !self.accounts.is_empty() {
             subs.push(PrefilterBuilder::default().accounts(&self.accounts));
@@ -125,7 +126,7 @@ impl Prefilter {
     }
 
     /// The single shipstern prefilter for an instruction or transaction pipeline.
-    pub fn tx_subscription(&self) -> PrefilterBuilder {
+    pub fn tx_prefilter(&self) -> PrefilterBuilder {
         let mut b = PrefilterBuilder::default();
         if !self.tx_accounts_include.is_empty() {
             b = b.transaction_accounts_include(&self.tx_accounts_include);

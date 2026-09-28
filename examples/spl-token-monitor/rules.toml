@@ -1,0 +1,34 @@
+# Which rules run, with what config, and where their alerts go. `program` and
+# `name` must match a `RuleId` registered in that program's `spec()`; `sinks`
+# are ids from `[[sinks]]` in config.toml. The `config` table is the rule's
+# typed `Config` and is validated before anything connects.
+
+[[rules]]
+program = "spl_token"
+name = "large_transfer"
+sinks = ["stdout"]
+cooldown_period_seconds = 60
+[rules.config]
+# USDC treasury-style token accounts to watch as the transfer source.
+accounts = ["3emsAVdmGKERbHjmGfQ6oZ1e35dkf5iYcS6U4CPKFVaa"]
+# Raw units: USDC has 6 decimals, so this is 1,000,000 USDC.
+min_amount = 1000000000000
+
+[[rules]]
+program = "spl_token"
+name = "balance_drop"
+sinks = ["stdout"]
+cooldown_period_seconds = 300
+[rules.config]
+accounts = ["3emsAVdmGKERbHjmGfQ6oZ1e35dkf5iYcS6U4CPKFVaa"]
+drop_bps = 2000
+
+[[rules]]
+program = "spl_token"
+name = "low_balance"
+sinks = ["stdout"]
+cooldown_period_seconds = 3600
+[rules.config]
+accounts = ["3emsAVdmGKERbHjmGfQ6oZ1e35dkf5iYcS6U4CPKFVaa"]
+min_amount = 1000000000
+poll_interval_seconds = 120

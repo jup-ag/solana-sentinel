@@ -2,7 +2,7 @@
 //! [`GrpcRule`] (stream-fed) or [`RpcRule`] (poll-fed).
 
 use crate::deps::ProgramDeps;
-use crate::prefilter::Prefilter;
+use crate::subscription::Subscription;
 use crate::BootstrapCtx;
 use async_trait::async_trait;
 use domain::alert::{Alert, DedupScope};
@@ -78,12 +78,15 @@ pub trait GrpcRule: RuleDef {
     type Event: Send + Sync + 'static;
 
     /// Pure function of constants and config; shapes the subscription.
-    fn static_prefilter(cfg: &Self::Config) -> Prefilter;
+    fn static_subscription(cfg: &Self::Config) -> Subscription;
 
+    /// Rules that keep last-seen state use interior mutability (`StateCache`);
+    /// the handler and the sweep loop may call concurrently.
     fn evaluate(&self, ev: &Self::Event, ctx: &StreamCtx) -> Option<Alert>;
 
     /// Optional periodic re-evaluation with no incoming event (interest accrual, staleness).
-    fn sweep_interval(&self) -> Option<Duration> {
+    /// Read once from config, like [`RpcRule::poll_interval`].
+    fn sweep_interval(_cfg: &Self::Config) -> Option<Duration> {
         None
     }
 
@@ -111,7 +114,6 @@ pub trait RpcRule: RuleDef {
 pub trait DynGrpcRule<Ev>: Send + Sync {
     fn id(&self) -> RuleId;
     fn evaluate(&self, ev: &Ev, ctx: &StreamCtx) -> Option<Alert>;
-    fn sweep_interval(&self) -> Option<Duration>;
     fn sweep(&self) -> Vec<Alert>;
 }
 
@@ -122,10 +124,6 @@ impl<R: GrpcRule> DynGrpcRule<R::Event> for R {
 
     fn evaluate(&self, ev: &R::Event, ctx: &StreamCtx) -> Option<Alert> {
         GrpcRule::evaluate(self, ev, ctx)
-    }
-
-    fn sweep_interval(&self) -> Option<Duration> {
-        GrpcRule::sweep_interval(self)
     }
 
     fn sweep(&self) -> Vec<Alert> {
@@ -149,7 +147,14 @@ impl<R: RpcRule> DynRpcRule<R::Item> for R {
     }
 }
 
+/// One rule, shared by the pipeline handler and its sweep loop.
 pub type SharedGrpcRule<Ev> = Arc<dyn DynGrpcRule<Ev>>;
+
+/// A built stream rule plus the sweep cadence its config asked for.
+pub struct BuiltStreamRule<Ev> {
+    pub rule: SharedGrpcRule<Ev>,
+    pub sweep_interval: Option<Duration>,
+}
 pub type SharedRpcRule<It> = Arc<dyn DynRpcRule<It>>;
 
 /// Config for rules that take none; accepts an empty or absent `[rules.config]`.

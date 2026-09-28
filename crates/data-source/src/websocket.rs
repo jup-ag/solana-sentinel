@@ -2,13 +2,17 @@
 //! from `accountSubscribe` / `programSubscribe`; transactions from
 //! `logsSubscribe(mentions)` followed by `getTransaction`; slots from
 //! `slotSubscribe`. Each update is tagged with the filter names it matches,
-//! computed locally, so the dispatcher routes it exactly as the gRPC path would.
+//! computed locally, so shipstern's runtime routes it exactly as gRPC would.
 
 use crate::convert::{account_update, transaction_update};
+use crate::kafka::next_filters;
+use crate::matching::tx_matches;
 use async_trait::async_trait;
 use futures::stream::{BoxStream, SelectAll};
 use futures::StreamExt;
-use shipstern_core::{AccountFilter, Filters, MemcmpData, TransactionPrefilter};
+use serde::Deserialize;
+use shipstern::sources::{FilterUpdateSource, SourceExitStatus, SourceTrait};
+use shipstern_core::{AccountFilter, Filters, MemcmpData};
 use solana_account_decoder_client_types::UiAccountEncoding;
 use solana_commitment_config::CommitmentConfig;
 use solana_pubkey::Pubkey;
@@ -20,46 +24,153 @@ use solana_rpc_client_api::config::{
 };
 use solana_rpc_client_api::filter::{Memcmp, RpcFilterType};
 use solana_rpc_client_api::response::SlotInfo;
-use solana_sentinel::source::{RawUpdate, SourceUpdate, SLOTS_FILTER};
-use solana_sentinel::StreamSource;
 use solana_signature::Signature;
 use solana_transaction_status_client_types::UiTransactionEncoding;
 use std::collections::{HashSet, VecDeque};
 use std::str::FromStr;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, watch};
-use tokio_util::sync::CancellationToken;
+use tokio::sync::mpsc::Sender;
+use tokio::sync::{oneshot, watch};
 use tracing::{debug, info, warn};
-use yellowstone_grpc_proto::geyser::SubscribeUpdateSlot;
+use yellowstone_grpc_proto::geyser::subscribe_update::UpdateOneof;
+use yellowstone_grpc_proto::geyser::{SubscribeUpdate, SubscribeUpdateSlot};
+use yellowstone_grpc_proto::tonic::Status;
 
 /// `getTransaction` right after a log notification can miss; retry briefly.
 const TX_FETCH_ATTEMPTS: u32 = 5;
 const TX_FETCH_BACKOFF: Duration = Duration::from_millis(400);
 const SEEN_SIGNATURES: usize = 4096;
 
+#[derive(Debug, Clone, Deserialize, clap::Args)]
+pub struct WebsocketConfig {
+    /// `wss://...` PubSub endpoint.
+    #[arg(long)]
+    pub url: String,
+    /// JSON-RPC endpoint for `getTransaction` on each log notification.
+    #[arg(long)]
+    pub rpc_url: String,
+    /// `confirmed` or `finalized`; `processed` cannot serve `getTransaction`.
+    #[arg(long, default_value = "confirmed")]
+    pub commitment: String,
+}
+
 pub struct WebsocketSource {
-    url: String,
-    rpc: Arc<RpcClient>,
-    commitment: CommitmentConfig,
+    config: WebsocketConfig,
+    filters: Filters,
+    rpc: RpcClient,
+}
+
+impl std::fmt::Debug for WebsocketSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebsocketSource")
+            .field("config", &self.config)
+            .field("filters", &self.filters.parser_ids().collect::<Vec<_>>())
+            .finish_non_exhaustive()
+    }
 }
 
 impl WebsocketSource {
-    pub fn new(url: String, rpc: Arc<RpcClient>, commitment: &str) -> anyhow::Result<Self> {
-        let commitment = match commitment {
-            "confirmed" => CommitmentConfig::confirmed(),
-            "finalized" => CommitmentConfig::finalized(),
-            other => {
-                anyhow::bail!("websocket commitment must be confirmed or finalized, got `{other}`")
+    fn commitment(&self) -> Result<CommitmentConfig, shipstern::Error> {
+        match self.config.commitment.as_str() {
+            "confirmed" => Ok(CommitmentConfig::confirmed()),
+            "finalized" => Ok(CommitmentConfig::finalized()),
+            other => Err(shipstern::Error::Other(
+                format!("websocket commitment must be confirmed or finalized, got `{other}`")
+                    .into(),
+            )),
+        }
+    }
+
+    async fn run(
+        &self,
+        tx: Sender<Result<SubscribeUpdate, Status>>,
+        status_tx: oneshot::Sender<SourceExitStatus>,
+        mut filter_updates: Option<watch::Receiver<Filters>>,
+    ) -> Result<(), shipstern::Error> {
+        let commitment = self.commitment()?;
+        let client = match PubsubClient::new(&self.config.url).await {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = status_tx.send(SourceExitStatus::Error(e.to_string()));
+                return Err(shipstern::Error::Other(Box::new(e)));
             }
         };
-        Ok(Self {
-            url,
-            rpc,
-            commitment,
-        })
+        info!(url = %self.config.url, "PubSub connected");
+
+        let mut streams: SelectAll<BoxStream<'_, Event>> = SelectAll::new();
+        let mut opened = Opened::default();
+        let mut current = self.filters.clone();
+        if let Err(e) = self
+            .subscribe(&client, &current, commitment, &mut opened, &mut streams)
+            .await
+        {
+            let _ = status_tx.send(SourceExitStatus::Error(e.to_string()));
+            return Err(shipstern::Error::Other(e.into()));
+        }
+        let mut seen: VecDeque<String> = VecDeque::with_capacity(SEEN_SIGNATURES);
+
+        loop {
+            tokio::select! {
+                Some(next) = next_filters(&mut filter_updates) => {
+                    current = next;
+                    if let Err(e) = self.subscribe(&client, &current, commitment, &mut opened, &mut streams).await {
+                        warn!(error = %e, "Failed to apply filter update");
+                    }
+                }
+                event = streams.next() => {
+                    let Some(event) = event else {
+                        // No subscriptions at all: nothing will ever arrive.
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        continue;
+                    };
+                    let Some(update) = self.convert(event, &current, commitment, &mut seen).await else {
+                        continue;
+                    };
+                    if tx.send(Ok(update)).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+        drop(streams);
+        client.shutdown().await.ok();
+        let _ = status_tx.send(SourceExitStatus::ReceiverDropped);
+        Ok(())
     }
 }
+
+#[async_trait]
+impl SourceTrait for WebsocketSource {
+    type Config = WebsocketConfig;
+
+    fn new(config: Self::Config, filters: Filters) -> Self {
+        let rpc = RpcClient::new(config.rpc_url.clone());
+        Self {
+            config,
+            filters,
+            rpc,
+        }
+    }
+
+    async fn connect(
+        &self,
+        tx: Sender<Result<SubscribeUpdate, Status>>,
+        status_tx: oneshot::Sender<SourceExitStatus>,
+    ) -> Result<(), shipstern::Error> {
+        self.run(tx, status_tx, None).await
+    }
+
+    async fn connect_with_filter_updates(
+        &self,
+        tx: Sender<Result<SubscribeUpdate, Status>>,
+        status_tx: oneshot::Sender<SourceExitStatus>,
+        filter_updates_rx: watch::Receiver<Filters>,
+    ) -> Result<(), shipstern::Error> {
+        self.run(tx, status_tx, Some(filter_updates_rx)).await
+    }
+}
+
+impl FilterUpdateSource for WebsocketSource {}
 
 /// What one PubSub stream yields, before conversion.
 enum Event {
@@ -85,69 +196,18 @@ struct Opened {
     slots: bool,
 }
 
-#[async_trait]
-impl StreamSource for WebsocketSource {
-    async fn run(
-        self: Box<Self>,
-        filters: Filters,
-        mut filter_updates: watch::Receiver<Filters>,
-        sink: mpsc::Sender<SourceUpdate>,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<()> {
-        let client = PubsubClient::new(&self.url).await?;
-        info!(url = %self.url, "PubSub connected");
-
-        let mut streams: SelectAll<BoxStream<'_, Event>> = SelectAll::new();
-        let mut opened = Opened::default();
-        let mut current = filters;
-        self.subscribe(&client, &current, &mut opened, &mut streams)
-            .await?;
-        let mut seen: VecDeque<String> = VecDeque::with_capacity(SEEN_SIGNATURES);
-
-        loop {
-            tokio::select! {
-                _ = cancel.cancelled() => break,
-                changed = filter_updates.changed() => {
-                    if changed.is_err() {
-                        continue;
-                    }
-                    current = filter_updates.borrow_and_update().clone();
-                    if let Err(e) = self.subscribe(&client, &current, &mut opened, &mut streams).await {
-                        warn!(error = %e, "Failed to apply filter update");
-                    }
-                }
-                event = streams.next() => {
-                    let Some(event) = event else {
-                        // No subscriptions at all: nothing will ever arrive.
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                        continue;
-                    };
-                    let Some(update) = self.convert(event, &current, &mut seen).await else {
-                        continue;
-                    };
-                    if sink.send(update).await.is_err() {
-                        break;
-                    }
-                }
-            }
-        }
-        drop(streams);
-        client.shutdown().await.ok();
-        Ok(())
-    }
-}
-
 impl WebsocketSource {
     async fn subscribe<'a>(
         &self,
         client: &'a PubsubClient,
         filters: &Filters,
+        commitment: CommitmentConfig,
         opened: &mut Opened,
         streams: &mut SelectAll<BoxStream<'a, Event>>,
     ) -> anyhow::Result<()> {
         let account_config = RpcAccountInfoConfig {
             encoding: Some(UiAccountEncoding::Base64),
-            commitment: Some(self.commitment),
+            commitment: Some(commitment),
             ..Default::default()
         };
 
@@ -218,7 +278,7 @@ impl WebsocketSource {
                         .logs_subscribe(
                             RpcTransactionLogsFilter::Mentions(vec![pubkey.to_string()]),
                             RpcTransactionLogsConfig {
-                                commitment: Some(self.commitment),
+                                commitment: Some(commitment),
                             },
                         )
                         .await?;
@@ -232,7 +292,7 @@ impl WebsocketSource {
                     );
                 }
             }
-            if name == SLOTS_FILTER && !opened.slots {
+            if prefilter.slot.is_some() && !opened.slots {
                 opened.slots = true;
                 let (stream, _unsub) = client.slot_subscribe().await?;
                 streams.push(stream.map(Event::Slot).boxed());
@@ -251,27 +311,40 @@ impl WebsocketSource {
         &self,
         event: Event,
         filters: &Filters,
+        commitment: CommitmentConfig,
         seen: &mut VecDeque<String>,
-    ) -> Option<SourceUpdate> {
+    ) -> Option<SubscribeUpdate> {
+        let update = |filters: Vec<String>, update_oneof| SubscribeUpdate {
+            filters,
+            update_oneof: Some(update_oneof),
+            created_at: None,
+        };
         match event {
             Event::Account {
                 filter,
                 pubkey,
                 account,
                 slot,
-            } => Some(SourceUpdate {
-                filters: vec![filter],
-                update: RawUpdate::Account(account_update(&pubkey, &account, slot)?),
-            }),
-            Event::Slot(info) => Some(SourceUpdate {
-                filters: vec![SLOTS_FILTER.to_string()],
-                update: RawUpdate::Slot(SubscribeUpdateSlot {
-                    slot: info.slot,
-                    parent: Some(info.parent),
-                    status: 0,
-                    dead_error: None,
-                }),
-            }),
+            } => Some(update(
+                vec![filter],
+                UpdateOneof::Account(account_update(&pubkey, &account, slot)?),
+            )),
+            Event::Slot(info) => {
+                let names: Vec<String> = filters
+                    .parser_ids()
+                    .filter(|name| filters.get(name).is_some_and(|p| p.slot.is_some()))
+                    .map(str::to_string)
+                    .collect();
+                Some(update(
+                    names,
+                    UpdateOneof::Slot(SubscribeUpdateSlot {
+                        slot: info.slot,
+                        parent: Some(info.parent),
+                        status: 0,
+                        dead_error: None,
+                    }),
+                ))
+            }
             Event::Logs { signature, failed } => {
                 if seen.contains(&signature) {
                     return None;
@@ -281,14 +354,14 @@ impl WebsocketSource {
                 }
                 seen.push_back(signature.clone());
 
-                let converted = self.fetch_transaction(&signature).await?;
+                let converted = self.fetch_transaction(&signature, commitment).await?;
                 let names: Vec<String> = filters
                     .parser_ids()
                     .filter(|name| {
                         filters
                             .get(name)
                             .and_then(|p| p.transaction.as_ref())
-                            .is_some_and(|t| tx_matches(t, &converted.account_keys, failed))
+                            .is_some_and(|t| tx_matches(t, &converted.account_keys, failed, false))
                     })
                     .map(str::to_string)
                     .collect();
@@ -296,10 +369,7 @@ impl WebsocketSource {
                     return None;
                 }
                 debug!(%signature, filters = ?names, "PubSub transaction matched");
-                Some(SourceUpdate {
-                    filters: names,
-                    update: RawUpdate::Transaction(Box::new(converted.update)),
-                })
+                Some(update(names, UpdateOneof::Transaction(converted.update)))
             }
         }
     }
@@ -307,11 +377,12 @@ impl WebsocketSource {
     async fn fetch_transaction(
         &self,
         signature: &str,
+        commitment: CommitmentConfig,
     ) -> Option<crate::convert::ConvertedTransaction> {
         let sig = Signature::from_str(signature).ok()?;
         let config = RpcTransactionConfig {
             encoding: Some(UiTransactionEncoding::Base64),
-            commitment: Some(self.commitment),
+            commitment: Some(commitment),
             max_supported_transaction_version: Some(0),
         };
         for attempt in 1..=TX_FETCH_ATTEMPTS {
@@ -329,18 +400,6 @@ impl WebsocketSource {
         }
         None
     }
-}
-
-/// The same test yellowstone applies server-side, on the fetched transaction's keys.
-fn tx_matches(filter: &TransactionPrefilter, keys: &[Pubkey], failed: bool) -> bool {
-    if failed && filter.failed == Some(false) {
-        return false;
-    }
-    let has = |k: &shipstern_core::Pubkey| keys.contains(&Pubkey::new_from_array(k.0));
-    let included = filter.accounts_include.is_empty() || filter.accounts_include.iter().any(has);
-    let required = filter.accounts_required.iter().all(has);
-    let excluded = filter.accounts_exclude.iter().any(has);
-    included && required && !excluded
 }
 
 fn rpc_filter(f: &AccountFilter) -> Option<RpcFilterType> {
