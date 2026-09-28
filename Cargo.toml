@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*"]
+members = ["crates/*", "examples/*"]
 resolver = "2"
 
 [workspace.package]
@@ -23,7 +23,7 @@ domain = { path = "crates/domain", package = "solana-sentinel-domain" }
 utility = { path = "crates/utility", package = "solana-sentinel-utility" }
 observability = { path = "crates/observability", package = "solana-sentinel-observability" }
 alerting = { path = "crates/alerting", package = "solana-sentinel-alerting" }
-ingest = { path = "crates/ingest", package = "solana-sentinel-ingest" }
+data-source = { path = "crates/data-source", package = "solana-sentinel-data-source" }
 solana-sentinel-service = { path = "crates/service" }
 solana-sentinel-migration = { path = "crates/migration" }
 
@@ -45,10 +45,14 @@ shipstern = "0.9.0"
 shipstern-core = "0.9.0"
 shipstern-parser = "0.9.0"
 shipstern-proc-macro = "0.9.0"
-shipstern-yellowstone-grpc-source = "0.9.0"
 shipstern-spl-token-parser = "0.9.0"
 shipstern-slot-parser = "0.9.0"
+shipstern-yellowstone-grpc-source = "0.9.0"
 yellowstone-grpc-proto = { version = "12", default-features = false }
+prost = "0.14"
+clap = { version = "4", features = ["derive"] }
+# Kafka source; ssl-vendored so SASL_SSL works without a system OpenSSL.
+rdkafka = { version = "0.39", features = ["tokio", "ssl-vendored"] }
 
 tracing-subscriber = { version = "0.3.20", features = [
     "env-filter",

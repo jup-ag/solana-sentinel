@@ -2,12 +2,13 @@ use anyhow::Result;
 use config::{Config, File, FileFormat};
 use domain::sinks::SinkId;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use url::Url;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServiceConfig {
-    pub geyser_source: GeyserSourceConfig,
+    pub data_source: DataSourceConfig,
     pub rpc: RpcConfig,
     pub sinks: Vec<SinkConfig>,
     pub observability: ObservabilityConfig,
@@ -15,49 +16,65 @@ pub struct ServiceConfig {
     pub redis: Option<RedisConfig>,
 }
 
-/// Where the stream comes from. `yellowstone` (alias `shipstern`) is the default
-/// production path; `grpc` is a plain Yellowstone client through the framework
-/// dispatcher; `websocket` is Solana PubSub, for nodes without Geyser.
+/// Where the stream comes from. Every variant is a shipstern source running in its
+/// runtime: `yellowstone_grpc` (production default), `websocket` (Solana PubSub, for
+/// nodes without Geyser), `kafka` (janus raw topics).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum GeyserSourceConfig {
-    #[serde(alias = "shipstern")]
-    Yellowstone(YellowstoneConfig),
-    Grpc(PlainGrpcConfig),
-    Websocket(WebsocketConfig),
+pub enum DataSourceConfig {
+    YellowstoneGrpc(YellowstoneGrpcSourceConfig),
+    Websocket(WebsocketSourceConfig),
+    Kafka(KafkaSourceConfig),
 }
 
+/// Shipstern runtime buffer settings, shared by every source type.
 #[derive(Debug, Clone, Deserialize)]
-pub struct PlainGrpcConfig {
-    pub endpoint: String,
-    pub token: Option<String>,
-    #[serde(default = "defaults::yellowstone_timeout_seconds")]
-    pub timeout_seconds: u64,
-    #[serde(default = "defaults::yellowstone_channel_size")]
+pub struct BufferSettings {
+    /// Bounded channel between the source and the pipelines.
+    #[serde(default = "defaults::sources_channel_size")]
     pub sources_channel_size: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct WebsocketConfig {
+pub struct YellowstoneGrpcSourceConfig {
+    pub endpoint: String,
+    pub token: Option<String>,
+    #[serde(default = "defaults::grpc_timeout_seconds")]
+    pub timeout_seconds: u64,
+    /// Client-side reconnect with slot replay and dedup (default on).
+    #[serde(default = "defaults::auto_reconnect")]
+    pub auto_reconnect: bool,
+    #[serde(flatten)]
+    pub buffer: BufferSettings,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebsocketSourceConfig {
     /// `wss://...` PubSub endpoint. Transactions are fetched over `[rpc]` on each log notification.
     pub url: String,
     /// `confirmed` (default) or `finalized`; `processed` cannot serve `getTransaction`.
     #[serde(default = "defaults::websocket_commitment")]
     pub commitment: String,
-    #[serde(default = "defaults::yellowstone_channel_size")]
-    pub sources_channel_size: usize,
+    #[serde(flatten)]
+    pub buffer: BufferSettings,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct YellowstoneConfig {
-    pub endpoint: String,
-    pub token: Option<String>,
-    #[serde(default = "defaults::yellowstone_timeout_seconds")]
-    pub timeout_seconds: u64,
-    #[serde(default = "defaults::yellowstone_jobs")]
-    pub jobs: usize,
-    #[serde(default = "defaults::yellowstone_channel_size")]
-    pub sources_channel_size: usize,
+pub struct KafkaSourceConfig {
+    /// Comma-separated `host:port` list (librdkafka `bootstrap.servers`).
+    pub brokers: String,
+    /// janus raw topics: `raw.<program>.accounts` / `raw.<program>.transactions`.
+    pub topics: Vec<String>,
+    /// Consumer group. Replicas that must each see every update need distinct groups.
+    pub group_id: String,
+    /// `latest` (default) or `earliest`.
+    #[serde(default = "defaults::kafka_auto_offset_reset")]
+    pub auto_offset_reset: String,
+    /// Extra librdkafka properties, e.g. `security.protocol`, `sasl.mechanism`.
+    #[serde(default)]
+    pub properties: HashMap<String, String>,
+    #[serde(flatten)]
+    pub buffer: BufferSettings,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -163,13 +180,13 @@ impl ServiceConfig {
 }
 
 mod defaults {
-    pub fn yellowstone_timeout_seconds() -> u64 {
+    pub fn grpc_timeout_seconds() -> u64 {
         120
     }
-    pub fn yellowstone_jobs() -> usize {
-        1
+    pub fn auto_reconnect() -> bool {
+        true
     }
-    pub fn yellowstone_channel_size() -> usize {
+    pub fn sources_channel_size() -> usize {
         50_000
     }
 
@@ -192,5 +209,9 @@ mod defaults {
 
     pub fn websocket_commitment() -> String {
         "confirmed".into()
+    }
+
+    pub fn kafka_auto_offset_reset() -> String {
+        "latest".into()
     }
 }

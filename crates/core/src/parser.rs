@@ -1,45 +1,49 @@
 //! Parser wrappers the framework installs around a program's parser: a
 //! program-prefixed id (no cross-program collisions) and, for instruction
-//! pipelines, a local transaction-accounts gate. Shipstern bundles every
-//! instruction parser behind one pipeline, so without the gate a parser sees
-//! instructions from transactions another program subscribed to.
+//! pipelines, a local transaction-accounts gate. Instruction parsers share one
+//! bundled subscription, so without the gate a parser sees instructions from
+//! transactions another program subscribed to.
 
 use crate::handler::{RawEvent, RuleHandler};
-use crate::prefilter::Prefilter;
-use crate::source::Dispatcher;
+use crate::subscription::Subscription;
 use domain::programs::Program;
 use shipstern::builder::RuntimeBuilder;
 use shipstern::filter_pipeline::FilterPipeline;
-use shipstern::handler::DynPipeline;
+use shipstern::handler::BoxPipeline;
+use shipstern::sources::SourceTrait;
 use shipstern_core::instruction::{AccountKeys, InstructionUpdate};
 use shipstern_core::{
     AccountUpdate, ParseError, ParseResult, Parser, PrefilterBuilder, SlotUpdate, TransactionUpdate,
 };
-use shipstern_yellowstone_grpc_source::YellowstoneGrpcSource;
 use solana_pubkey::Pubkey;
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt::Debug;
 
-pub type GrpcBuilder = RuntimeBuilder<YellowstoneGrpcSource>;
-
-/// Where installed pipelines go: shipstern's own runtime, or the framework
-/// dispatcher fed by any [`crate::source::StreamSource`].
-pub enum PipelineSink {
-    Shipstern(GrpcBuilder),
-    Dispatcher(Dispatcher),
+/// Where installed pipelines go: a shipstern runtime builder for whichever
+/// source the deployment configured, behind an object-safe surface.
+pub trait PipelineSink {
+    fn add_account(&mut self, pipeline: BoxPipeline<'static, AccountUpdate>);
+    fn add_instruction(&mut self, pipeline: BoxPipeline<'static, InstructionUpdate>);
+    fn add_transaction(&mut self, pipeline: BoxPipeline<'static, TransactionUpdate>);
+    fn add_slot(&mut self, pipeline: BoxPipeline<'static, SlotUpdate>);
 }
 
-impl PipelineSink {
-    /// The slot feed, always present: the tracker needs it for health and checkpoints.
-    pub fn slot(&mut self, pipeline: impl DynPipeline<SlotUpdate> + Send + Sync + 'static) {
-        match self {
-            Self::Shipstern(builder) => {
-                let b = std::mem::take(builder);
-                *builder = b.slot(pipeline);
-            }
-            Self::Dispatcher(d) => d.add_slot(pipeline),
-        }
+impl<S: SourceTrait> PipelineSink for RuntimeBuilder<S> {
+    fn add_account(&mut self, pipeline: BoxPipeline<'static, AccountUpdate>) {
+        *self = std::mem::take(self).account(pipeline);
+    }
+
+    fn add_instruction(&mut self, pipeline: BoxPipeline<'static, InstructionUpdate>) {
+        *self = std::mem::take(self).instruction(pipeline);
+    }
+
+    fn add_transaction(&mut self, pipeline: BoxPipeline<'static, TransactionUpdate>) {
+        *self = std::mem::take(self).transaction(pipeline);
+    }
+
+    fn add_slot(&mut self, pipeline: BoxPipeline<'static, SlotUpdate>) {
+        *self = std::mem::take(self).slot(pipeline);
     }
 }
 
@@ -47,8 +51,8 @@ impl PipelineSink {
 pub trait StreamInput: RawEvent + Sized + Send + Sync + 'static {
     const KIND: PipelineKind;
 
-    /// The yellowstone filters this prefilter expands to for this kind.
-    fn subscriptions(prefilter: &Prefilter) -> Vec<PrefilterBuilder>;
+    /// The shipstern prefilters this subscription expands to for this kind.
+    fn prefilters(subscription: &Subscription) -> Vec<PrefilterBuilder>;
 
     /// Whether the kind shares one bundled pipeline and so needs the local gate.
     fn needs_gate() -> bool {
@@ -60,7 +64,7 @@ pub trait StreamInput: RawEvent + Sized + Send + Sync + 'static {
     }
 
     fn add_pipeline<P, Ev>(
-        sink: &mut PipelineSink,
+        sink: &mut dyn PipelineSink,
         parser: FrameworkParser<P>,
         handler: RuleHandler<Ev>,
         sub: PrefilterBuilder,
@@ -91,12 +95,12 @@ impl PipelineKind {
 impl StreamInput for AccountUpdate {
     const KIND: PipelineKind = PipelineKind::Account;
 
-    fn subscriptions(prefilter: &Prefilter) -> Vec<PrefilterBuilder> {
-        prefilter.account_subscriptions()
+    fn prefilters(subscription: &Subscription) -> Vec<PrefilterBuilder> {
+        subscription.account_prefilters()
     }
 
     fn add_pipeline<P, Ev>(
-        sink: &mut PipelineSink,
+        sink: &mut dyn PipelineSink,
         parser: FrameworkParser<P>,
         handler: RuleHandler<Ev>,
         sub: PrefilterBuilder,
@@ -105,22 +109,16 @@ impl StreamInput for AccountUpdate {
         Ev: Send + Sync + 'static,
     {
         let pipeline = FilterPipeline::new(parser, [handler], sub);
-        match sink {
-            PipelineSink::Shipstern(builder) => {
-                let b = std::mem::take(builder);
-                *builder = b.account(pipeline);
-            }
-            PipelineSink::Dispatcher(d) => d.add_account(pipeline),
-        }
+        sink.add_account(Box::new(pipeline));
     }
 }
 
 impl StreamInput for InstructionUpdate {
     const KIND: PipelineKind = PipelineKind::Instruction;
 
-    fn subscriptions(prefilter: &Prefilter) -> Vec<PrefilterBuilder> {
-        if prefilter.has_tx_subscription() {
-            vec![prefilter.tx_subscription()]
+    fn prefilters(subscription: &Subscription) -> Vec<PrefilterBuilder> {
+        if subscription.watches_transactions() {
+            vec![subscription.tx_prefilter()]
         } else {
             Vec::new()
         }
@@ -135,7 +133,7 @@ impl StreamInput for InstructionUpdate {
     }
 
     fn add_pipeline<P, Ev>(
-        sink: &mut PipelineSink,
+        sink: &mut dyn PipelineSink,
         parser: FrameworkParser<P>,
         handler: RuleHandler<Ev>,
         sub: PrefilterBuilder,
@@ -144,29 +142,23 @@ impl StreamInput for InstructionUpdate {
         Ev: Send + Sync + 'static,
     {
         let pipeline = FilterPipeline::new(parser, [handler], sub);
-        match sink {
-            PipelineSink::Shipstern(builder) => {
-                let b = std::mem::take(builder);
-                *builder = b.instruction(pipeline);
-            }
-            PipelineSink::Dispatcher(d) => d.add_instruction(pipeline),
-        }
+        sink.add_instruction(Box::new(pipeline));
     }
 }
 
 impl StreamInput for TransactionUpdate {
     const KIND: PipelineKind = PipelineKind::Transaction;
 
-    fn subscriptions(prefilter: &Prefilter) -> Vec<PrefilterBuilder> {
-        if prefilter.has_tx_subscription() {
-            vec![prefilter.tx_subscription()]
+    fn prefilters(subscription: &Subscription) -> Vec<PrefilterBuilder> {
+        if subscription.watches_transactions() {
+            vec![subscription.tx_prefilter()]
         } else {
             Vec::new()
         }
     }
 
     fn add_pipeline<P, Ev>(
-        sink: &mut PipelineSink,
+        sink: &mut dyn PipelineSink,
         parser: FrameworkParser<P>,
         handler: RuleHandler<Ev>,
         sub: PrefilterBuilder,
@@ -175,17 +167,11 @@ impl StreamInput for TransactionUpdate {
         Ev: Send + Sync + 'static,
     {
         let pipeline = FilterPipeline::new(parser, [handler], sub);
-        match sink {
-            PipelineSink::Shipstern(builder) => {
-                let b = std::mem::take(builder);
-                *builder = b.transaction(pipeline);
-            }
-            PipelineSink::Dispatcher(d) => d.add_transaction(pipeline),
-        }
+        sink.add_transaction(Box::new(pipeline));
     }
 }
 
-/// The transaction-level part of a pipeline's prefilter, re-checked locally.
+/// The transaction-level part of a pipeline's subscription, re-checked locally.
 #[derive(Debug, Clone, Default)]
 pub struct TxGate {
     include: HashSet<Pubkey>,
@@ -193,10 +179,10 @@ pub struct TxGate {
 }
 
 impl TxGate {
-    pub fn from_prefilter(prefilter: &Prefilter) -> Self {
+    pub fn from_subscription(subscription: &Subscription) -> Self {
         Self {
-            include: prefilter.tx_accounts_include.clone(),
-            required: prefilter.tx_accounts_required.clone(),
+            include: subscription.tx_accounts_include.clone(),
+            required: subscription.tx_accounts_required.clone(),
         }
     }
 

@@ -1,5 +1,6 @@
 //! Keyed last-seen state shared by change-detection rules: seed at bootstrap,
-//! `replace` on every update, compare against what came back.
+//! `replace` on every update, compare against what came back. Locked inside,
+//! so a rule can use it from `evaluate(&self)`.
 
 use domain::rules::RuleId;
 use parking_lot::Mutex;

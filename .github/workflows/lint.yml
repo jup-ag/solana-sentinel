@@ -22,6 +22,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # rustfmt.toml uses unstable options, so formatting needs nightly rustfmt.
+      - name: Install nightly rustfmt
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+
       - name: Run make fmt-check
         run: make fmt-check
 
@@ -32,9 +38,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install stable Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      # Installs the channel pinned in rust-toolchain.toml (with clippy).
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.95.0
           components: clippy
 
       - name: Cache cargo registry, index and build artifacts

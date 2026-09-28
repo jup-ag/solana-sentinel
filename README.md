@@ -2,7 +2,7 @@
 
 A framework for on-chain security monitoring and alerting on Solana.
 
-Ingests account / transaction updates (Yellowstone gRPC, websocket, or your own source),
+Ingests account / transaction updates (Yellowstone gRPC, websocket, Kafka, or your own source),
 evaluates them against typed per-program rules, and dispatches alerts to humans and storage.
 It is a library: a deployment workspace depends on it, adds its own program crates, and
 calls `solana_sentinel_service::run` from a tiny binary.
@@ -10,15 +10,15 @@ calls `solana_sentinel_service::run` from a tiny binary.
 ## Architecture
 
 ```
-Yellowstone gRPC / websocket / any StreamSource ──▶ stream pipelines (parser + rules) ──┐
+Yellowstone gRPC / websocket / Kafka (janus) / any shipstern source ──▶ stream pipelines (parser + rules) ──┐
 RPC getMultipleAccounts ─────────────────────────▶ poll loops (source + rules) ─────────┼──▶ Router ──▶ AlertingService ──▶ Sinks
                                                                                          ┘        (cooldown gate + fleet gate)
 ```
 
 - **`ProgramSpec`** — what a program crate exports: a parser per feed and the rules registered on it.
-- **`RuleDef` + `GrpcRule` / `RpcRule`** — one rule, one file; typed config, static prefilter, `evaluate`.
+- **`RuleDef` + `GrpcRule` / `RpcRule`** — one rule, one file; typed config, static subscription, `evaluate`.
 - **`ProgramDeps`** — a program's shared cache, bootstrapped before any rule; owns chain-discovered watch sets.
-- **`StreamSource`** — the transport (shipstern, plain gRPC, PubSub websocket, or your own); rules never see it.
+- **Data sources** — shipstern `SourceTrait` impls (Yellowstone gRPC, PubSub websocket, janus Kafka topics, or your own); rules never see the transport.
 - **`solana_sentinel_service::run`** — the whole service behind one call; a deployment binary passes its name and program list.
 - **`Router`** — `HashMap<RuleId, Vec<SinkId>>` fan-out from rules to sinks.
 - **`AlertingService`** — dedups (cooldown + fleet gates), batches and forwards alerts to sinks.
@@ -28,8 +28,9 @@ for the design.
 
 ## Using it
 
-See `CONTRIBUTING.md`: it shows the deployment binary, how to write a program and a rule,
-and the ingestion sources. `config.example.toml` documents every service setting;
+Start from `examples/spl-token-monitor/`, a complete deployment with an instruction, an
+account and a poll rule. `CONTRIBUTING.md` shows the deployment binary, how to write a program and a rule,
+and the data sources. `config.example.toml` documents every service setting;
 `<binary> check` validates a deployment's `rules.toml` without connecting anywhere.
 
 ## Configuration

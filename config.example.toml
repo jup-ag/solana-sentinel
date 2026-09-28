@@ -1,21 +1,30 @@
-# Stream source: where on-chain updates come from. One of:
-#   type = "yellowstone"  Yellowstone gRPC through the shipstern runtime (default, production)
-#   type = "grpc"         plain Yellowstone gRPC client through the framework dispatcher
-#                         (same fields: endpoint, token, timeout_seconds, sources_channel_size)
-#   type = "websocket"    Solana PubSub for nodes without Geyser:
-#                         url = "wss://api.mainnet-beta.solana.com", commitment = "confirmed"
-#                         Transactions are fetched over [rpc] on each log notification.
-# Anything else: implement `solana_sentinel::StreamSource` (see crates/ingest/).
-[geyser_source]
-type = "yellowstone"
+# Data source: where on-chain updates come from. Every type feeds the same
+# framework dispatcher, so rules never see which one is configured. One of:
+#   type = "yellowstone_grpc" Yellowstone gRPC via shipstern's client (default, production):
+#                             auto_reconnect = true reconnects with slot replay + dedup
+#   type = "websocket"        Solana PubSub for nodes without Geyser:
+#                             url = "wss://api.mainnet-beta.solana.com", commitment = "confirmed"
+#                             Transactions are fetched over [rpc] on each log notification.
+#   type = "kafka"            janus raw topics (github.com/jup-ag/janus):
+#                             brokers = "b1:9092,b2:9092", group_id = "sentinel",
+#                             topics = ["raw.<program>.transactions", "raw.<program>.accounts"]
+#                             auto_offset_reset = "latest"; extra librdkafka settings under
+#                             [data_source.properties], e.g. "security.protocol" = "SASL_SSL".
+#                             Records are matched locally, so a topic can carry more than the
+#                             rules need. Replicas that must each see every record need
+#                             distinct group_ids.
+# Every type also takes `sources_channel_size` (shipstern runtime buffer).
+# Anything else: implement `shipstern::sources::SourceTrait` (see crates/data-source/).
+[data_source]
+type = "yellowstone_grpc"
 endpoint = "https://your-yellowstone-endpoint:443"
 token = "REPLACE_ME"
 # gRPC client connection + request timeout, in seconds.
 timeout_seconds = 120
-# Number of concurrent stream consumers. Increase if a single consumer can't
-# keep up with the stream; otherwise leave at 1.
-jobs = 1
-# Bounded channel between the gRPC source and downstream processors.
+# Client-side reconnect with slot replay and dedup; false makes a dropped
+# stream stop the service instead.
+auto_reconnect = true
+# Bounded channel between the source and the pipelines.
 # Larger = more tolerance for downstream stalls, more memory.
 sources_channel_size = 50000
 

@@ -1,6 +1,6 @@
 use crate::config::rules::{RuleConfig, RulesConfig};
 use crate::config::service::{
-    GeyserSourceConfig, ObservabilityConfig, RedisConfig, RpcConfig, ServiceConfig, SinkConfig,
+    DataSourceConfig, ObservabilityConfig, RedisConfig, RpcConfig, ServiceConfig, SinkConfig,
 };
 
 pub mod rules;
@@ -37,8 +37,8 @@ impl SentinelConfig {
         &self.service.sinks
     }
 
-    pub fn geyser_source(&self) -> &GeyserSourceConfig {
-        &self.service.geyser_source
+    pub fn data_source(&self) -> &DataSourceConfig {
+        &self.service.data_source
     }
 
     pub fn observability(&self) -> &ObservabilityConfig {

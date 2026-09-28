@@ -16,7 +16,6 @@ spl-token-2022-interface = { workspace = true }
 solana-account-decoder-client-types = { workspace = true }
 shipstern-spl-token-parser = { workspace = true }
 shipstern = { workspace = true }
-shipstern-yellowstone-grpc-source = { workspace = true }
 shipstern-core = { workspace = true }
 yellowstone-grpc-proto = { workspace = true }
 
