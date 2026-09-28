@@ -1,0 +1,24 @@
+[package]
+name = "bpf_loader"
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+interface = { workspace = true }
+utility = { workspace = true }
+
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+wincode = { workspace = true }
+
+solana-pubkey = { workspace = true }
+solana-rpc-client = { workspace = true }
+solana-loader-v3-interface = { workspace = true }
+shipstern-core = { workspace = true }
+
+[lints]
+workspace = true

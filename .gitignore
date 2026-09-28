@@ -1,0 +1,8 @@
+/target
+**/*.rs.bk
+*.pdb
+.tmp
+# Local configuration files
+config.toml
+.cursor
+rules.test.toml

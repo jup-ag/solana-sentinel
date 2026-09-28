@@ -1,0 +1,196 @@
+use anyhow::Result;
+use config::{Config, File, FileFormat};
+use domain::sinks::SinkId;
+use serde::Deserialize;
+use std::net::SocketAddr;
+use url::Url;
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ServiceConfig {
+    pub geyser_source: GeyserSourceConfig,
+    pub rpc: RpcConfig,
+    pub sinks: Vec<SinkConfig>,
+    pub observability: ObservabilityConfig,
+    /// Optional: without it, cooldown / fleet gates are in-memory and slot checkpoints are not persisted.
+    pub redis: Option<RedisConfig>,
+}
+
+/// Where the stream comes from. `yellowstone` (alias `shipstern`) is the default
+/// production path; `grpc` is a plain Yellowstone client through the framework
+/// dispatcher; `websocket` is Solana PubSub, for nodes without Geyser.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum GeyserSourceConfig {
+    #[serde(alias = "shipstern")]
+    Yellowstone(YellowstoneConfig),
+    Grpc(PlainGrpcConfig),
+    Websocket(WebsocketConfig),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlainGrpcConfig {
+    pub endpoint: String,
+    pub token: Option<String>,
+    #[serde(default = "defaults::yellowstone_timeout_seconds")]
+    pub timeout_seconds: u64,
+    #[serde(default = "defaults::yellowstone_channel_size")]
+    pub sources_channel_size: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebsocketConfig {
+    /// `wss://...` PubSub endpoint. Transactions are fetched over `[rpc]` on each log notification.
+    pub url: String,
+    /// `confirmed` (default) or `finalized`; `processed` cannot serve `getTransaction`.
+    #[serde(default = "defaults::websocket_commitment")]
+    pub commitment: String,
+    #[serde(default = "defaults::yellowstone_channel_size")]
+    pub sources_channel_size: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct YellowstoneConfig {
+    pub endpoint: String,
+    pub token: Option<String>,
+    #[serde(default = "defaults::yellowstone_timeout_seconds")]
+    pub timeout_seconds: u64,
+    #[serde(default = "defaults::yellowstone_jobs")]
+    pub jobs: usize,
+    #[serde(default = "defaults::yellowstone_channel_size")]
+    pub sources_channel_size: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RpcConfig {
+    pub url: Url,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SinkConfig {
+    Clickhouse(ClickhouseConfig),
+    Slack(SlackConfig),
+    Betterstack(BetterstackSinkConfig),
+    /// JSON lines on stdout; for local runs.
+    Stdout(StdoutSinkConfig),
+}
+
+impl SinkConfig {
+    pub fn id(&self) -> &SinkId {
+        match self {
+            Self::Clickhouse(c) => &c.id,
+            Self::Slack(s) => &s.id,
+            Self::Betterstack(b) => &b.id,
+            Self::Stdout(s) => &s.id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StdoutSinkConfig {
+    pub id: SinkId,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClickhouseConfig {
+    pub id: SinkId,
+    pub url: Url,
+    #[serde(default = "defaults::clickhouse_user")]
+    pub user: String,
+    #[serde(default)]
+    pub password: String,
+    #[serde(default = "defaults::clickhouse_database")]
+    pub database: String,
+    #[serde(default = "defaults::clickhouse_batch_size")]
+    pub batch_size: usize,
+    #[serde(default = "defaults::clickhouse_flush_interval_ms")]
+    pub flush_interval_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SlackConfig {
+    pub id: SinkId,
+    pub bot_auth_token: String,
+    pub channel: String,
+    #[serde(default = "defaults::slack_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ObservabilityConfig {
+    pub server: ServerConfig,
+    /// Optional Betterstack heartbeat; omit for local runs.
+    pub betterstack: Option<BetterstackHeartbeatConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ServerConfig {
+    pub bind_addr: SocketAddr,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BetterstackSinkConfig {
+    pub id: SinkId,
+    pub incident_api_url: String,
+    pub incident_auth_token: String,
+    pub escalation_policy_id: String,
+    pub requester_email: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BetterstackHeartbeatConfig {
+    pub heartbeat_url: String,
+    pub heartbeat_interval_seconds: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RedisConfig {
+    /// Per-pod sidecar Redis (slot_checkpoint, cooldown_gate, etc.)
+    pub redis_sidecar_url: String,
+    /// Fleet-wide shared Redis (alert deduplication, alert suppression)
+    pub redis_fleet_url: String,
+}
+
+impl ServiceConfig {
+    pub fn load() -> Result<Self> {
+        let path = std::env::var("CONFIG_FILE").unwrap_or_else(|_| "./config.toml".into());
+        let cfg = Config::builder()
+            .add_source(File::new(&path, FileFormat::Toml).required(true))
+            .build()?
+            .try_deserialize::<Self>()?;
+        Ok(cfg)
+    }
+}
+
+mod defaults {
+    pub fn yellowstone_timeout_seconds() -> u64 {
+        120
+    }
+    pub fn yellowstone_jobs() -> usize {
+        1
+    }
+    pub fn yellowstone_channel_size() -> usize {
+        50_000
+    }
+
+    pub fn clickhouse_user() -> String {
+        "default".into()
+    }
+    pub fn clickhouse_database() -> String {
+        "default".into()
+    }
+    pub fn clickhouse_batch_size() -> usize {
+        100
+    }
+    pub fn clickhouse_flush_interval_ms() -> u64 {
+        5_000
+    }
+
+    pub fn slack_timeout_seconds() -> u64 {
+        10
+    }
+
+    pub fn websocket_commitment() -> String {
+        "confirmed".into()
+    }
+}

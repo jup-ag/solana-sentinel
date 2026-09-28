@@ -1,0 +1,117 @@
+# Stream source: where on-chain updates come from. One of:
+#   type = "yellowstone"  Yellowstone gRPC through the shipstern runtime (default, production)
+#   type = "grpc"         plain Yellowstone gRPC client through the framework dispatcher
+#                         (same fields: endpoint, token, timeout_seconds, sources_channel_size)
+#   type = "websocket"    Solana PubSub for nodes without Geyser:
+#                         url = "wss://api.mainnet-beta.solana.com", commitment = "confirmed"
+#                         Transactions are fetched over [rpc] on each log notification.
+# Anything else: implement `interface::StreamSource` (see ingest/).
+[geyser_source]
+type = "yellowstone"
+endpoint = "https://your-yellowstone-endpoint:443"
+token = "REPLACE_ME"
+# gRPC client connection + request timeout, in seconds.
+timeout_seconds = 120
+# Number of concurrent stream consumers. Increase if a single consumer can't
+# keep up with the stream; otherwise leave at 1.
+jobs = 1
+# Bounded channel between the gRPC source and downstream processors.
+# Larger = more tolerance for downstream stalls, more memory.
+sources_channel_size = 50000
+
+# RPC endpoint for on-demand queries (e.g. fetching account data).
+[rpc]
+url = "https://api.mainnet-beta.solana.com"
+
+# Observability configuration.
+[observability.server]
+bind_addr = "127.0.0.1:8080"
+
+# Optional. Omit the whole section for local runs.
+[observability.betterstack]
+heartbeat_url = "https://uptime.betterstack.com/api/v1/heartbeat/REPLACE_ME"
+heartbeat_interval_seconds = 30
+
+# ===========================================================================
+# Sinks: where alerts are dispatched to.
+#
+# Each `[[sinks]]` block has:
+#   - `type`: the sink kind (`clickhouse`, `slack`, ...). Determines which
+#     fields are accepted on the block.
+#   - `id`:   a user-chosen string identifier for this specific sink instance.
+#             Must be unique across ALL sinks and is what `[[programs.rules]]`
+#             references in its `sinks = [...]` list.
+#
+# The same `type` may appear multiple times under distinct `id`s, e.g. a
+# `prod-archive` and `audit-archive` ClickHouse, or a `team-oncall` and
+# `team-security` Slack webhook. Rules can route to any subset of them.
+# ===========================================================================
+
+# Stdout: prints alerts as JSON lines. Enough for a local run; route rules to it
+# with `sinks = ["stdout"]`.
+[[sinks]]
+type = "stdout"
+id = "stdout"
+
+# Primary ClickHouse: archival sink. Durable record-of-truth.
+[[sinks]]
+type = "clickhouse"
+id = "primary-clickhouse"
+url = "http://localhost:8123"
+user = "default"
+password = ""
+database = "default"
+# Rows are buffered and flushed in batches of this size or when the flush
+# interval elapses, whichever comes first.
+batch_size = 100
+flush_interval_ms = 5000
+
+# Secondary ClickHouse: separate cluster for compliance/audit retention.
+[[sinks]]
+type = "clickhouse"
+id = "audit-clickhouse"
+url = "http://audit-clickhouse.internal:8123"
+user = "audit"
+password = ""
+database = "audit"
+batch_size = 100
+flush_interval_ms = 5000
+
+# Slack: on-call channel. Pages the team on critical events.
+[[sinks]]
+type = "slack"
+id = "oncall-slack"
+bot_auth_token = "xoxb-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+channel = "CXXXXXXXXX"
+# Max alerts coalesced into a single Slack message. Larger batches reduce
+# webhook calls but produce longer messages; Slack will reject overly long
+# payloads, so don't push this too high.
+max_batch_len = 20
+# HTTP timeout for the webhook POST, in seconds.
+timeout_seconds = 10
+
+# Slack: low-noise informational channel for non-paging events.
+[[sinks]]
+type = "slack"
+id = "info-slack"
+bot_auth_token = "xoxb-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+channel = "CXXXXXXXXX"
+max_batch_len = 20
+timeout_seconds = 10
+
+[[sinks]]
+type = "betterstack"
+id = "betterstack"
+incident_api_url = "https://betterstack.com/api/v1/incidents/REPLACE_ME"
+incident_auth_token = "REPLACE_ME"
+escalation_policy_id = "REPLACE_ME"
+requester_email = "REPLACE_ME"
+
+# Optional. Without `[redis]` the cooldown and fleet gates are in-memory and the
+# slot checkpoint is not persisted: fine for one local process, not for a fleet.
+[redis]
+# Ex: "redis://localhost:6379"
+# Per-pod sidecar Redis for slot checkpoint and cooldown gate
+redis_sidecar_url = "redis://localhost:6379"
+# Fleet-wide shared Redis for fleet gate (alert deduplication)
+redis_fleet_url = "redis://redis-fleet.example:6379"

@@ -1,0 +1,182 @@
+[workspace]
+members = [
+    "programs/*",
+    "service",
+    "alerting",
+    "migration",
+    "domain",
+    "observability",
+    "ingest",
+]
+resolver = "1"
+
+[workspace.package]
+edition = "2021"
+publish = false
+repository = "https://github.com/jup-ag/solana-sentinel"
+version = "0.0.1"
+
+[profile.release]
+opt-level = 3
+panic = "abort"
+strip = false
+debug = 1
+codegen-units = 8
+
+[workspace.dependencies]
+alerting = { path = "alerting" }
+domain = { path = "domain" }
+interface = { path = "programs/interface" }
+ingest = { path = "ingest" }
+registry = { path = "programs/registry" }
+observability = { path = "observability" }
+
+# Programs
+squads_v4 = { path = "programs/squads_v4" }
+spl_token = { path = "programs/spl_token" }
+sentinel = { path = "programs/sentinel" }
+pyth = { path = "programs/pyth" }
+jup_usd = { path = "programs/jup_usd" }
+bpf_loader = { path = "programs/bpf_loader" }
+jup_lend = { path = "programs/jup_lend" }
+system = { path = "programs/system" }
+# Utility crate for shared constants and helper functions. Not a real on-chain program.
+utility = { path = "programs/utility" }
+
+# Solana
+solana-pubkey = "3.0.0"
+solana-rpc-client = "3.0.0"
+solana-program-pack = "3.1.0"
+spl-token-interface = "3.0.0"
+spl-token-2022-interface = "3.0.1"
+solana-account-decoder-client-types = "3.0.0"
+solana-sdk-ids = "3.0.0"
+solana-system-interface = { version = "3.0.0", features = ["wincode"] }
+solana-account = "3.0.0"
+solana-loader-v3-interface = { version = "8.0.1", features = ["wincode"] }
+
+## Shipstern (formerly Yellowstone Vixen)
+shipstern = "0.9.0"
+shipstern-core = "0.9.0"
+shipstern-parser = "0.9.0"
+shipstern-proc-macro = "0.9.0"
+shipstern-yellowstone-grpc-source = "0.9.0"
+shipstern-spl-token-parser = "0.9.0"
+shipstern-slot-parser = "0.9.0"
+yellowstone-grpc-proto = { version = "12", default-features = false }
+
+tracing-subscriber = { version = "0.3.20", features = [
+    "env-filter",
+    "fmt",
+    "json",
+] }
+tracing = "0.1.44"
+
+# serialization
+serde = { version = "1.0", features = ["derive"] }
+borsh = { version = "1.6.1", features = ["derive"] }
+wincode = "0.5.5"
+bytemuck = "1.25.0"
+serde_json = "1.0.150"
+
+# async, db, metrics ..
+async-trait = "0.1.89"
+tokio = { version = "^1.0", features = ["full"] }
+tokio-util = { version = "0.7.15", features = ["rt"] }
+anyhow = "1.0"
+config = "0.15.11"
+rustls = { version = "0.23", default-features = false, features = [
+    "std",
+    "aws-lc-rs",
+] }
+bs58 = "0.5.1"
+futures = "0.3.32"
+url = { version = "2.5.4", features = ["serde"] }
+chrono = { version = "0.4.44", features = ["serde"] }
+thiserror = "2.0.18"
+uuid = { version = "1.23.1", features = ["serde", "v4"] }
+strum = { version = "0.28", features = ["derive"] }
+clickhouse = { version = "0.15.0", features = [
+    "chrono",
+    "uuid",
+    "lz4",
+    "rustls-tls",
+] }
+klickhouse = { version = "0.15.2", features = ["refinery", "tls"] }
+refinery = { version = "0.9.1", features = ["tokio-postgres"] }
+reqwest = { version = "0.12", features = [
+    "json",
+    "rustls-tls",
+], default-features = false }
+parking_lot = "0.12.5"
+axum = "0.8.9"
+prometheus = "0.14.0"
+tokio-rustls = "0.26.4"
+rustls-pki-types = "1.14.1"
+webpki-roots = "1.0.7"
+sha2 = "0.11.0"
+hex = "0.4.3"
+redis = { version = "0.27.6", features = [
+  "tokio-comp",
+  "cluster",
+  "cluster-async",
+  "tokio-rustls-comp",
+  "connection-manager",
+] }
+hostname = "0.4.2"
+
+[workspace.lints.clippy]
+# clippy nursery lints
+branches_sharing_code = "warn"
+clear_with_drain = "warn"
+collection_is_never_read = "warn"
+derive_partial_eq_without_eq = "warn"
+equatable_if_let = "warn"
+imprecise_flops = "warn"
+iter_on_empty_collections = "warn"
+iter_on_single_items = "warn"
+iter_with_drain = "warn"
+mutex_integer = "warn"
+needless_collect = "warn"
+needless_pass_by_ref_mut = "warn"
+or_fun_call = "warn"
+path_buf_push_overwrite = "warn"
+read_zero_byte_vec = "warn"
+redundant_clone = "warn"
+string_lit_as_bytes = "warn"
+suboptimal_flops = "warn"
+suspicious_operation_groupings = "warn"
+trait_duplication_in_bounds = "warn"
+type_repetition_in_bounds = "warn"
+unnecessary_struct_initialization = "warn"
+unused_peekable = "warn"
+unused_rounding = "warn"
+use_self = "warn"
+
+# clippy pedantic lints
+cloned_instead_of_copied = "warn"
+enum_glob_use = "warn"
+explicit_deref_methods = "warn"
+explicit_into_iter_loop = "warn"
+explicit_iter_loop = "warn"
+filter_map_next = "warn"
+flat_map_option = "warn"
+float_cmp = "warn"
+implicit_clone = "warn"
+inconsistent_struct_constructor = "warn"
+iter_filter_is_ok = "warn"
+iter_filter_is_some = "warn"
+manual_instant_elapsed = "warn"
+manual_is_variant_and = "warn"
+manual_let_else = "warn"
+manual_ok_or = "warn"
+manual_string_new = "warn"
+match_bool = "warn"
+needless_continue = "warn"
+needless_for_each = "warn"
+needless_pass_by_value = "warn"
+option_as_ref_cloned = "warn"
+range_minus_one = "warn"
+range_plus_one = "warn"
+redundant_closure_for_method_calls = "warn"
+unused_async = "warn"

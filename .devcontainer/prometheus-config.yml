@@ -1,0 +1,36 @@
+# Prometheus configuration for the solana-sentinel monitoring service.
+# Prometheus pulls metrics from the service's /metrics endpoint on the interval
+# below; the service does not push. Point `targets` at wherever http_server binds.
+
+global:
+  scrape_interval: 5s # how often to scrape each target
+  scrape_timeout: 5s # must be <= scrape_interval
+  evaluation_interval: 15s # how often to evaluate alerting/recording rules
+
+# Alerting rule files (optional). Uncomment and create the file to use them.
+# rule_files:
+#   - "alerts.yml"
+
+# Alertmanager wiring (optional). Uncomment if you run Alertmanager.
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets:
+#             - "alertmanager:9093"
+
+scrape_configs:
+  # The Solana Sentinel monitoring service itself.
+  - job_name: "solana_sentinel"
+    metrics_path: /metrics # default; shown for clarity
+    static_configs:
+      - targets:
+          - "host.docker.internal:8080" # host:port where the Axum http_server binds
+        labels:
+          service: "solana_sentinel"
+          compute_group: "staging" # to test locally
+
+  # Prometheus scraping its own metrics (useful for monitoring the monitor).
+  - job_name: "prometheus"
+    static_configs:
+      - targets:
+          - "localhost:9090"

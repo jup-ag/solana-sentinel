@@ -1,0 +1,36 @@
+[package]
+name = "alerting"
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+observability = { workspace = true }
+domain = { workspace = true }
+
+solana-pubkey = { workspace = true }
+
+tokio = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+clickhouse = { workspace = true }
+url = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+redis = { workspace = true }
+parking_lot = { workspace = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["redis"] }
