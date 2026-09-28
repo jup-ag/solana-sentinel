@@ -1,0 +1,36 @@
+[package]
+name = "solana-sentinel-ingest"
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+solana-sentinel = { workspace = true }
+
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+base64 = "0.22"
+bs58 = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+shipstern-core = { workspace = true }
+yellowstone-grpc-client = "13"
+yellowstone-grpc-proto = { workspace = true }
+solana-pubkey = { workspace = true }
+solana-pubsub-client = "3.1"
+solana-rpc-client = { workspace = true }
+solana-rpc-client-api = "3.1"
+solana-account-decoder-client-types = { workspace = true }
+solana-transaction = "3.1"
+solana-message = "3.1"
+solana-signature = "3.1"
+solana-commitment-config = "3"
+solana-transaction-status-client-types = "3.1"
+
+[lints]
+workspace = true

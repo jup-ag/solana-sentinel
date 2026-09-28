@@ -1,8 +1,8 @@
 use crate::parser::{SquadsV4Ix, SquadsV4Ixs};
-use interface::{Alert, GrpcRule, Prefilter, RuleDef, RuleId, Severity, StreamCtx};
 use serde::Deserialize;
 use solana_pubkey::Pubkey;
-use utility::pubkey::deserialize_pubkey_vec;
+use solana_sentinel::utility::pubkey::deserialize_pubkey_vec;
+use solana_sentinel::{Alert, GrpcRule, Prefilter, RuleDef, RuleId, Severity, StreamCtx};
 
 #[derive(Debug, Deserialize)]
 pub struct NewProposalConfig {

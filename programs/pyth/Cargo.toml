@@ -1,13 +1,12 @@
 [package]
-name = "pyth"
+name = "solana-sentinel-pyth"
 edition.workspace = true
 publish.workspace = true
 repository.workspace = true
 version.workspace = true
 
 [dependencies]
-interface = { workspace = true }
-utility = { workspace = true }
+solana-sentinel = { workspace = true }
 
 solana-pubkey = { workspace = true }
 solana-account = { workspace = true }

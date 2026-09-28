@@ -4,14 +4,14 @@ use solana_loader_v3_interface::state::UpgradeableLoaderState;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::api::config::{RpcAccountInfoConfig, UiAccountEncoding, UiDataSliceConfig};
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
+use solana_sentinel::utility::constants::{
+    BPF_LOADER_2_PROGRAM_ID, BPF_LOADER_PROGRAM_ID, BPF_LOADER_UPGRADEABLE_PROGRAM_ID,
+};
+use solana_sentinel::utility::pubkey::derive_program_data_address;
+use solana_sentinel::utility::rpc::try_fetch_accounts_from_rpc;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use tracing::warn;
-use utility::constants::{
-    BPF_LOADER_2_PROGRAM_ID, BPF_LOADER_PROGRAM_ID, BPF_LOADER_UPGRADEABLE_PROGRAM_ID,
-};
-use utility::pubkey::derive_program_data_address;
-use utility::rpc::try_fetch_accounts_from_rpc;
 use wincode::Deserialize;
 
 pub enum BPFLoaderProgram {

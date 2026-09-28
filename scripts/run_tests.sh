@@ -10,7 +10,7 @@ if [[ -f .env ]]; then
   set +a
 fi
 
-: "${RUST_LOG:=info,solana_sentinel=debug}"
+: "${RUST_LOG:=info,solana_sentinel_service=debug}"
 export RUST_LOG
 
-exec cargo test -p alerting -- --nocapture "$@"
+exec cargo test --workspace -- --nocapture "$@"

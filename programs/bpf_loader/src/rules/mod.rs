@@ -2,11 +2,11 @@ pub mod program_upgrade;
 pub mod program_upgrade_auth_change;
 
 use crate::parser::{fetch_program_metadata, ProgramMetadata};
-use interface::{BootstrapCtx, Prefilter, StateCache};
 use serde::Deserialize;
 use solana_pubkey::Pubkey;
+use solana_sentinel::utility::pubkey::{derive_program_data_address, deserialize_pubkey_array};
+use solana_sentinel::{BootstrapCtx, Prefilter, StateCache};
 use std::collections::HashMap;
-use utility::pubkey::{derive_program_data_address, deserialize_pubkey_array};
 
 /// Both loader rules watch a list of programs by their ProgramData PDA.
 #[derive(Debug, Deserialize)]

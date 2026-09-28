@@ -1,17 +1,17 @@
 use crate::parser::TokenProgramState;
 use async_trait::async_trait;
-use interface::{
-    Alert, BootstrapCtx, GrpcRule, Prefilter, RuleDef, RuleId, Severity, StateCache, StreamCtx,
-};
 use serde::Deserialize;
 use shipstern_spl_token_parser::account::Account as SplAccount;
 use shipstern_spl_token_parser::Mint;
 use solana_pubkey::Pubkey;
+use solana_sentinel::utility::math::token_amount_to_ui_amount_compact;
+use solana_sentinel::utility::pubkey::deserialize_pubkey_map;
+use solana_sentinel::utility::rpc::try_fetch_mints_from_rpc;
+use solana_sentinel::{
+    Alert, BootstrapCtx, GrpcRule, Prefilter, RuleDef, RuleId, Severity, StateCache, StreamCtx,
+};
 use std::collections::{BTreeMap, HashMap};
 use tracing::{debug, info};
-use utility::math::token_amount_to_ui_amount_compact;
-use utility::pubkey::deserialize_pubkey_map;
-use utility::rpc::try_fetch_mints_from_rpc;
 
 #[derive(Debug, Deserialize)]
 pub struct TokenSupplyIncreaseConfig {

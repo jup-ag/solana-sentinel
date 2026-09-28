@@ -14,7 +14,7 @@ fi
 [[ -n $cli_rules ]] && RULES_FILE=$cli_rules
 
 : "${RULES_FILE:=rules.toml}"
-: "${RUST_LOG:=info,solana_sentinel=debug}"
+: "${RUST_LOG:=info,solana_sentinel_service=debug}"
 : "${RUST_BACKTRACE:=1}"
 export RULES_FILE RUST_LOG RUST_BACKTRACE
-exec cargo run --bin solana_sentinel "$@"
+exec cargo run --bin solana-sentinel "$@"

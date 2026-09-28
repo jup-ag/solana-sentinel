@@ -1,14 +1,6 @@
 [workspace]
-members = [
-    "programs/*",
-    "service",
-    "alerting",
-    "migration",
-    "domain",
-    "observability",
-    "ingest",
-]
-resolver = "1"
+members = ["crates/*", "programs/*"]
+resolver = "2"
 
 [workspace.package]
 edition = "2021"
@@ -24,24 +16,24 @@ debug = 1
 codegen-units = 8
 
 [workspace.dependencies]
-alerting = { path = "alerting" }
-domain = { path = "domain" }
-interface = { path = "programs/interface" }
-ingest = { path = "ingest" }
-registry = { path = "programs/registry" }
-observability = { path = "observability" }
+# Framework crates
+solana-sentinel = { path = "crates/core" }
+# Short aliases keep `use domain::…` inside the framework; the packages are prefixed.
+domain = { path = "crates/domain", package = "solana-sentinel-domain" }
+utility = { path = "crates/utility", package = "solana-sentinel-utility" }
+observability = { path = "crates/observability", package = "solana-sentinel-observability" }
+alerting = { path = "crates/alerting", package = "solana-sentinel-alerting" }
+ingest = { path = "crates/ingest", package = "solana-sentinel-ingest" }
+solana-sentinel-service = { path = "crates/service" }
+solana-sentinel-migration = { path = "crates/migration" }
 
-# Programs
-squads_v4 = { path = "programs/squads_v4" }
-spl_token = { path = "programs/spl_token" }
-sentinel = { path = "programs/sentinel" }
-pyth = { path = "programs/pyth" }
-jup_usd = { path = "programs/jup_usd" }
-bpf_loader = { path = "programs/bpf_loader" }
-jup_lend = { path = "programs/jup_lend" }
-system = { path = "programs/system" }
-# Utility crate for shared constants and helper functions. Not a real on-chain program.
-utility = { path = "programs/utility" }
+# Bundled programs; a deployment lists the ones it runs in its own registry.
+solana-sentinel-squads-v4 = { path = "programs/squads_v4" }
+solana-sentinel-spl-token = { path = "programs/spl_token" }
+solana-sentinel-watchlist = { path = "programs/watchlist" }
+solana-sentinel-pyth = { path = "programs/pyth" }
+solana-sentinel-bpf-loader = { path = "programs/bpf_loader" }
+solana-sentinel-system = { path = "programs/system" }
 
 # Solana
 solana-pubkey = "3.0.0"

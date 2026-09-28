@@ -123,17 +123,17 @@ run: ## Run the solana-sentinel binary (debug profile)
 	@printf "Starting solana-sentinel (debug) with config %s...\n" "$(CONFIG_FILE)"
 	@CONFIG_FILE=$(CONFIG_FILE) \
 		RUST_LOG=$(RUST_LOG) \
-		$(CARGO) run --bin solana_sentinel
+		$(CARGO) run --bin solana-sentinel
 
 run-release: ## Run the solana-sentinel binary (release profile)
 	@printf "Starting solana-sentinel (release) with config %s...\n" "$(CONFIG_FILE)"
 	@CONFIG_FILE=$(CONFIG_FILE) \
 		RUST_LOG=$(RUST_LOG) \
-		$(CARGO) run --bin solana_sentinel --release
+		$(CARGO) run --bin solana-sentinel --release
 
 check-rules: ## Validate rules.toml + config.toml without connecting anywhere
 	@CONFIG_FILE=$(CONFIG_FILE) RUST_LOG=$(RUST_LOG) \
-		$(CARGO) run --bin solana_sentinel -- check
+		$(CARGO) run --bin solana-sentinel -- check
 
 run-tests: ## Run the workspace test suite
 	@printf "Running tests...\n"

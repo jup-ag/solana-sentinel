@@ -1,0 +1,20 @@
+[package]
+name = "solana-sentinel-watchlist"
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+solana-sentinel = { workspace = true }
+
+anyhow = { workspace = true }
+serde = { workspace = true }
+wincode = { workspace = true }
+
+solana-system-interface = { workspace = true }
+solana-pubkey = { workspace = true }
+solana-sdk-ids = { workspace = true }
+
+[lints]
+workspace = true

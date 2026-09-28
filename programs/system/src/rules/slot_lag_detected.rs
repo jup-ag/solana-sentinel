@@ -2,10 +2,12 @@
 //! alerts when they diverge, which means the stream is stalled or lagging.
 
 use crate::{SlotSample, SystemDeps};
-use interface::{Alert, DedupScope, GrpcSlotReader, PollCtx, RpcRule, RuleDef, RuleId, Severity};
-use observability::prometheus::metrics::record_tracked_slot;
 use serde::Deserialize;
 use solana_pubkey::Pubkey;
+use solana_sentinel::observability::prometheus::metrics::record_tracked_slot;
+use solana_sentinel::{
+    Alert, DedupScope, GrpcSlotReader, PollCtx, RpcRule, RuleDef, RuleId, Severity,
+};
 use std::collections::HashSet;
 use std::time::Duration;
 use tracing::{info, warn};

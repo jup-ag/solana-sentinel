@@ -1,11 +1,11 @@
 use crate::parser::PriceFeedUpdate;
-use interface::{Alert, GrpcRule, Prefilter, RuleDef, RuleId, Severity, StreamCtx};
 use serde::Deserialize;
 use solana_pubkey::Pubkey;
+use solana_sentinel::utility::math::to_ui_price_compact;
+use solana_sentinel::utility::pubkey::deserialize_pubkey_map;
+use solana_sentinel::{Alert, GrpcRule, Prefilter, RuleDef, RuleId, Severity, StreamCtx};
 use std::collections::HashMap;
 use tracing::{debug, warn};
-use utility::math::to_ui_price_compact;
-use utility::pubkey::deserialize_pubkey_map;
 
 #[derive(Debug)]
 pub struct ReferencePriceDrift {
@@ -139,7 +139,7 @@ pub fn is_drift_exceeded(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use utility::math::to_ui_price;
+    use solana_sentinel::utility::math::to_ui_price;
 
     #[test]
     fn test_is_drift_exceeded() {

@@ -27,20 +27,6 @@ programs = [
 # … trimmed; list every address you want watched
 ]
 
-# JUP USD Collateralization
-[[rules]]
-program = "jup_usd"
-name = "jup_usd_collaterization"
-sinks = ["primary-clickhouse", "info-slack"]
-cooldown_period_seconds = 300                # 5 minutes
-[rules.config]
-mint = "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD"
-[rules.config.custodian_wallets]
-B3q4P4XSmycvoHLaiEjchsGDafFPhKokvHvNRuW29N1y = ["USDC", "USDTB"]
-7i6ELgCKhZewDPg4P91w9FYpWKrSx7ptiNrUCrBarHff = ["USDC", "USDTB"]
-CkzLnD9r4d4ZZofsgNVo2VNunxDmte5YJ4vfAgMfBZNA = ["USDC", "USDTB"]
-4APzEJ8NmeTAq1geJP4dtsZD8hSDqsLiiY914twATk77 = ["USDC"]
-
 # Pyth Oracle staleness
 [[rules]]
 program = "pyth"
@@ -133,54 +119,6 @@ members = [
 # … trimmed; list every address you want watched
 ]
 
-# JupLend Liquidity Reserve Utilization Rate
-[[rules]]
-program = "jup_lend"
-name = "jup_lend_liquidity_reserve_utilization_rate"
-sinks = ["primary-clickhouse", "info-slack"]
-cooldown_period_seconds = 300                      # 5 minutes
-[rules.config.thresholds]
-# USDC TokenReserve
-"94vK29npVbyRHXH63rRcTiSr26SFhrQTzbpNJuhQEDu" = 9500 # 95% utilization rate threshold (changed from 93% to 95%)
-# wSOL TokenReserve
-"4Y66HtUEqbbbpZdENGtFdVhUMS3tnagffn3M4do59Nfy" = 9500 # 95% utilization rate threshold (changed from 93% to 95%)
-
-# JupLend Liquidity Reserve Solvency
-[[rules]]
-program = "jup_lend"
-name = "jup_lend_liquidity_reserve_solvency"
-sinks = ["primary-clickhouse", "info-slack"]
-cooldown_period_seconds = 300                      # 5 minutes
-[rules.config]
-
-# JupLend Liquidity AuthirorizationList change
-[[rules]]
-program = "jup_lend"
-name = "jup_lend_liquidity_auth_list_change"
-sinks = ["primary-clickhouse", "info-slack"]
-cooldown_period_seconds = 300
-[rules.config]
-
-# JupLend Whale Movement
-[[rules]]
-program = "jup_lend"
-name = "jup_lend_whale_movement"
-sinks = ["primary-clickhouse", "info-slack"]
-cooldown_period_seconds = 300                      # 5 minutes
-[rules.config]
-whale_supply_share_bps = 500                      # 5% of total supply
-
-# JupLend Liquidity Reserve change
-[[rules]]
-program = "jup_lend"
-name = "jup_lend_liquidity_reserve_change"
-sinks = ["primary-clickhouse", "info-slack"]
-cooldown_period_seconds = 300                      # 5 minutes
-[rules.config]
-threshold_bps = 5000                               # 50% change threshold
-window_secs = 300                                  # 5 minutes window for change detection
-
-# Service health: gRPC stream lagging behind RPC. Routed like any other rule
 # (previously hard-wired to the `betterstack` sink).
 [[rules]]
 program = "system"

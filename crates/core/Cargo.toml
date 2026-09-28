@@ -1,0 +1,40 @@
+[package]
+name = "solana-sentinel"
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+domain = { workspace = true }
+observability = { workspace = true }
+utility = { workspace = true }
+
+config = { workspace = true }
+serde = { workspace = true }
+solana-pubkey = { workspace = true }
+solana-account = { workspace = true }
+solana-rpc-client = { workspace = true }
+shipstern = { workspace = true }
+shipstern-core = { workspace = true }
+shipstern-yellowstone-grpc-source = { workspace = true }
+
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# Enables the `testing` helpers for this crate's own tests.
+solana-sentinel = { path = ".", features = ["testing"] }
+
+[features]
+# Fixture helpers for rule tests: `interface = { workspace = true, features = ["testing"] }` in dev-dependencies.
+testing = []
+
+[lints]
+workspace = true

@@ -91,33 +91,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "alerting"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "clickhouse",
- "domain",
- "futures",
- "observability",
- "parking_lot",
- "redis",
- "reqwest",
- "serde",
- "serde_json",
- "solana-pubkey 3.0.0",
- "testcontainers",
- "testcontainers-modules",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "url",
- "uuid",
-]
-
-[[package]]
 name = "alloc-no-stdlib"
 version = "2.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -524,23 +497,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "bpf_loader"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "interface",
- "serde",
- "shipstern-core",
- "solana-loader-v3-interface 8.0.1",
- "solana-pubkey 3.0.0",
- "solana-rpc-client",
- "tracing",
- "utility",
- "wincode",
 ]
 
 [[package]]
@@ -1307,17 +1263,6 @@ dependencies = [
  "base64",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "domain"
-version = "0.0.1"
-dependencies = [
- "chrono",
- "hex",
- "serde",
- "sha2 0.11.0",
- "uuid",
 ]
 
 [[package]]
@@ -2149,67 +2094,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "ingest"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64",
- "bs58",
- "futures",
- "interface",
- "serde",
- "shipstern-core",
- "solana-account-decoder-client-types",
- "solana-commitment-config",
- "solana-message",
- "solana-pubkey 3.0.0",
- "solana-pubsub-client",
- "solana-rpc-client",
- "solana-rpc-client-api",
- "solana-signature",
- "solana-transaction",
- "solana-transaction-status-client-types",
- "tokio",
- "tokio-util",
- "tracing",
- "yellowstone-grpc-client",
- "yellowstone-grpc-proto",
-]
-
-[[package]]
 name = "inout"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
 dependencies = [
  "generic-array",
-]
-
-[[package]]
-name = "interface"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "config",
- "domain",
- "futures",
- "interface",
- "observability",
- "parking_lot",
- "serde",
- "shipstern",
- "shipstern-core",
- "shipstern-yellowstone-grpc-source",
- "solana-account",
- "solana-pubkey 3.0.0",
- "solana-rpc-client",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "utility",
 ]
 
 [[package]]
@@ -2303,40 +2193,6 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
-]
-
-[[package]]
-name = "jup_lend"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "borsh",
- "interface",
- "parking_lot",
- "serde",
- "shipstern-core",
- "shipstern-parser",
- "shipstern-proc-macro",
- "solana-pubkey 3.0.0",
- "solana-rpc-client",
- "spl-token-2022-interface 3.0.1",
- "tracing",
- "utility",
-]
-
-[[package]]
-name = "jup_usd"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "interface",
- "serde",
- "solana-account",
- "solana-pubkey 3.0.0",
- "spl-token-2022-interface 3.0.1",
- "tracing",
- "utility",
 ]
 
 [[package]]
@@ -2548,22 +2404,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "migration"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "klickhouse",
- "refinery",
- "rustls",
- "rustls-pki-types",
- "tokio",
- "tokio-rustls",
- "tracing",
- "tracing-subscriber",
- "webpki-roots 1.0.7",
-]
-
-[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2756,28 +2596,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7216bd11cbda54ccabcab84d523dc93b858ec75ecfb3a7d89513fa22464da396"
 dependencies = [
  "objc2-core-foundation",
-]
-
-[[package]]
-name = "observability"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "axum",
- "domain",
- "futures",
- "prometheus",
- "redis",
- "reqwest",
- "serde",
- "serde_json",
- "shipstern",
- "shipstern-core",
- "solana-rpc-client",
- "tokio",
- "tokio-util",
- "tracing",
- "url",
 ]
 
 [[package]]
@@ -3183,18 +3001,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "program_template"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "interface",
- "serde",
- "solana-pubkey 3.0.0",
- "tokio",
- "utility",
-]
-
-[[package]]
 name = "prometheus"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3364,24 +3170,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "50793def1b900256624a709439404384204a5dc3a6ec580281bfaac35e882e90"
 dependencies = [
  "pulldown-cmark",
-]
-
-[[package]]
-name = "pyth"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "borsh",
- "bs58",
- "bytemuck",
- "chrono",
- "interface",
- "serde",
- "shipstern-core",
- "solana-account",
- "solana-pubkey 3.0.0",
- "tracing",
- "utility",
 ]
 
 [[package]]
@@ -3692,21 +3480,6 @@ name = "regex-syntax"
 version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
-
-[[package]]
-name = "registry"
-version = "0.0.1"
-dependencies = [
- "bpf_loader",
- "interface",
- "jup_lend",
- "jup_usd",
- "pyth",
- "sentinel",
- "spl_token",
- "squads_v4",
- "system",
-]
 
 [[package]]
 name = "reqwest"
@@ -4023,20 +3796,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
-name = "sentinel"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "interface",
- "serde",
- "solana-pubkey 3.0.0",
- "solana-sdk-ids",
- "solana-system-interface 3.2.0",
- "utility",
- "wincode",
-]
-
-[[package]]
 name = "serde"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4203,37 +3962,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "service"
-version = "0.0.1"
-dependencies = [
- "alerting",
- "anyhow",
- "config",
- "domain",
- "futures",
- "hostname",
- "ingest",
- "interface",
- "observability",
- "redis",
- "registry",
- "rustls",
- "serde",
- "shipstern",
- "shipstern-core",
- "shipstern-slot-parser",
- "shipstern-yellowstone-grpc-source",
- "solana-pubkey 3.0.0",
- "solana-rpc-client",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "url",
 ]
 
 [[package]]
@@ -5227,6 +4955,308 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-sentinel"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "config",
+ "futures",
+ "parking_lot",
+ "serde",
+ "shipstern",
+ "shipstern-core",
+ "shipstern-yellowstone-grpc-source",
+ "solana-account",
+ "solana-pubkey 3.0.0",
+ "solana-rpc-client",
+ "solana-sentinel",
+ "solana-sentinel-domain",
+ "solana-sentinel-observability",
+ "solana-sentinel-utility",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "solana-sentinel-alerting"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "clickhouse",
+ "futures",
+ "parking_lot",
+ "redis",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "solana-pubkey 3.0.0",
+ "solana-sentinel-domain",
+ "solana-sentinel-observability",
+ "testcontainers",
+ "testcontainers-modules",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "solana-sentinel-bpf-loader"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde",
+ "shipstern-core",
+ "solana-loader-v3-interface 8.0.1",
+ "solana-pubkey 3.0.0",
+ "solana-rpc-client",
+ "solana-sentinel",
+ "tracing",
+ "wincode",
+]
+
+[[package]]
+name = "solana-sentinel-cli"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "solana-sentinel",
+ "solana-sentinel-bpf-loader",
+ "solana-sentinel-pyth",
+ "solana-sentinel-service",
+ "solana-sentinel-spl-token",
+ "solana-sentinel-squads-v4",
+ "solana-sentinel-system",
+ "solana-sentinel-watchlist",
+ "tokio",
+]
+
+[[package]]
+name = "solana-sentinel-domain"
+version = "0.0.1"
+dependencies = [
+ "chrono",
+ "hex",
+ "serde",
+ "sha2 0.11.0",
+ "uuid",
+]
+
+[[package]]
+name = "solana-sentinel-ingest"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64",
+ "bs58",
+ "futures",
+ "serde",
+ "shipstern-core",
+ "solana-account-decoder-client-types",
+ "solana-commitment-config",
+ "solana-message",
+ "solana-pubkey 3.0.0",
+ "solana-pubsub-client",
+ "solana-rpc-client",
+ "solana-rpc-client-api",
+ "solana-sentinel",
+ "solana-signature",
+ "solana-transaction",
+ "solana-transaction-status-client-types",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "yellowstone-grpc-client",
+ "yellowstone-grpc-proto",
+]
+
+[[package]]
+name = "solana-sentinel-migration"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "klickhouse",
+ "refinery",
+ "rustls",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "tracing-subscriber",
+ "webpki-roots 1.0.7",
+]
+
+[[package]]
+name = "solana-sentinel-observability"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "axum",
+ "futures",
+ "prometheus",
+ "redis",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "shipstern",
+ "shipstern-core",
+ "solana-rpc-client",
+ "solana-sentinel-domain",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "solana-sentinel-program-template"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "serde",
+ "solana-pubkey 3.0.0",
+ "solana-sentinel",
+ "tokio",
+]
+
+[[package]]
+name = "solana-sentinel-pyth"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "borsh",
+ "bs58",
+ "bytemuck",
+ "chrono",
+ "serde",
+ "shipstern-core",
+ "solana-account",
+ "solana-pubkey 3.0.0",
+ "solana-sentinel",
+ "tracing",
+]
+
+[[package]]
+name = "solana-sentinel-service"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "config",
+ "futures",
+ "hostname",
+ "redis",
+ "rustls",
+ "serde",
+ "shipstern",
+ "shipstern-core",
+ "shipstern-slot-parser",
+ "shipstern-yellowstone-grpc-source",
+ "solana-pubkey 3.0.0",
+ "solana-rpc-client",
+ "solana-sentinel",
+ "solana-sentinel-alerting",
+ "solana-sentinel-domain",
+ "solana-sentinel-ingest",
+ "solana-sentinel-observability",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
+name = "solana-sentinel-spl-token"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde",
+ "shipstern-spl-token-parser",
+ "solana-pubkey 3.0.0",
+ "solana-sentinel",
+ "tracing",
+]
+
+[[package]]
+name = "solana-sentinel-squads-v4"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "borsh",
+ "serde",
+ "shipstern-core",
+ "shipstern-parser",
+ "shipstern-proc-macro",
+ "solana-pubkey 3.0.0",
+ "solana-sentinel",
+ "tokio",
+]
+
+[[package]]
+name = "solana-sentinel-system"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde",
+ "solana-account",
+ "solana-pubkey 3.0.0",
+ "solana-sentinel",
+ "tracing",
+]
+
+[[package]]
+name = "solana-sentinel-utility"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "borsh",
+ "bs58",
+ "hex",
+ "parking_lot",
+ "serde",
+ "shipstern",
+ "shipstern-core",
+ "shipstern-spl-token-parser",
+ "shipstern-yellowstone-grpc-source",
+ "solana-account",
+ "solana-account-decoder-client-types",
+ "solana-pubkey 3.0.0",
+ "solana-rpc-client",
+ "solana-sentinel-domain",
+ "solana-sentinel-observability",
+ "spl-token-2022-interface 3.0.1",
+ "tokio",
+ "tracing",
+ "yellowstone-grpc-proto",
+]
+
+[[package]]
+name = "solana-sentinel-watchlist"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "serde",
+ "solana-pubkey 3.0.0",
+ "solana-sdk-ids",
+ "solana-sentinel",
+ "solana-system-interface 3.2.0",
+ "wincode",
+]
+
+[[package]]
 name = "solana-serde-varint"
 version = "3.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5914,36 +5944,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "spl_token"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "interface",
- "serde",
- "shipstern-spl-token-parser",
- "solana-pubkey 3.0.0",
- "tracing",
- "utility",
-]
-
-[[package]]
-name = "squads_v4"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "borsh",
- "interface",
- "serde",
- "shipstern-core",
- "shipstern-parser",
- "shipstern-proc-macro",
- "solana-pubkey 3.0.0",
- "tokio",
- "utility",
-]
-
-[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6024,20 +6024,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "system"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "interface",
- "observability",
- "serde",
- "solana-account",
- "solana-pubkey 3.0.0",
- "tracing",
 ]
 
 [[package]]
@@ -6830,33 +6816,6 @@ name = "utf8parse"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
-
-[[package]]
-name = "utility"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "borsh",
- "bs58",
- "domain",
- "hex",
- "observability",
- "parking_lot",
- "serde",
- "shipstern",
- "shipstern-core",
- "shipstern-spl-token-parser",
- "shipstern-yellowstone-grpc-source",
- "solana-account",
- "solana-account-decoder-client-types",
- "solana-pubkey 3.0.0",
- "solana-rpc-client",
- "spl-token-2022-interface 3.0.1",
- "tokio",
- "tracing",
- "yellowstone-grpc-proto",
-]
 
 [[package]]
 name = "uuid"

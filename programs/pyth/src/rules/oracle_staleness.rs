@@ -1,12 +1,12 @@
 use crate::parser::PriceFeedUpdate;
 use chrono::Utc;
-use interface::{Alert, PollCtx, Prefilter, RpcRule, RuleDef, RuleId, Severity};
 use serde::Deserialize;
 use solana_pubkey::Pubkey;
+use solana_sentinel::utility::pubkey::deserialize_pubkey_map;
+use solana_sentinel::{Alert, PollCtx, Prefilter, RpcRule, RuleDef, RuleId, Severity};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use tracing::debug;
-use utility::pubkey::deserialize_pubkey_map;
 
 #[derive(Debug, Deserialize)]
 pub struct OracleStalenessConfig {

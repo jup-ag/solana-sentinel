@@ -2,10 +2,10 @@ pub mod parser;
 pub mod rules;
 
 use crate::parser::{PriceFeedSource, PythPriceFeedParser};
-use interface::{PollRules, Program, ProgramSpec, StreamRules};
 use rules::oracle_staleness::OracleStaleness;
 use rules::reference_price_drift::ReferencePriceDrift;
 use solana_pubkey::{pubkey, Pubkey};
+use solana_sentinel::{PollRules, Program, ProgramSpec, StreamRules};
 use std::time::Duration;
 
 /// Cadence of the price-feed poll used by staleness checks.

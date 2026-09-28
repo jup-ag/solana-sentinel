@@ -1,13 +1,12 @@
 [package]
-name = "bpf_loader"
+name = "solana-sentinel-bpf-loader"
 edition.workspace = true
 publish.workspace = true
 repository.workspace = true
 version.workspace = true
 
 [dependencies]
-interface = { workspace = true }
-utility = { workspace = true }
+solana-sentinel = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }

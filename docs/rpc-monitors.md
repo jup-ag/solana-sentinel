@@ -19,14 +19,13 @@ spec().poll(source, default_interval, PollRules::new().register::<R>())
 - A rule implements `RpcRule`: `accounts(cfg)` is what gets fetched, `poll_interval(cfg)` is
   optional (`None` = program default), `evaluate(item, &PollCtx)` gets the response slot.
 - The program implements `PollSource`: `parse` turns one fetch into items, per account (pyth)
-  or one cross-account snapshot (jup_usd). Parse failures are logged, not fatal.
+  or one cross-account snapshot (a collateralization ratio, say). Parse failures are logged, not fatal.
 - Same-cadence rules share one fetch. A rule with no accounts (the `system` slot-lag rule)
   still gets a `PollCtx` whose slot comes from `getSlot`.
 - `cooldown_period_seconds` should exceed the poll interval, or a persistent condition fires
   every tick.
 
-Programs with poll feeds: `pyth` (staleness), `jup_usd` (collateralization), `system`
-(slot lag).
+Bundled programs with poll feeds: `pyth` (staleness) and `system` (slot lag).
 
 ## Stream sources
 
@@ -42,4 +41,4 @@ The stream feed is transport-agnostic. `[geyser_source].type` selects:
   `logsSubscribe(mentions)` + `getTransaction`, slots via `slotSubscribe`. Filter matching
   is done locally against the fetched transaction's keys. Needs `confirmed` or `finalized`.
 
-A custom transport implements `interface::StreamSource`.
+A custom transport implements `solana_sentinel::StreamSource`.

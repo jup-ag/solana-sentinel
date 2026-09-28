@@ -5,7 +5,7 @@
 #   type = "websocket"    Solana PubSub for nodes without Geyser:
 #                         url = "wss://api.mainnet-beta.solana.com", commitment = "confirmed"
 #                         Transactions are fetched over [rpc] on each log notification.
-# Anything else: implement `interface::StreamSource` (see ingest/).
+# Anything else: implement `solana_sentinel::StreamSource` (see crates/ingest/).
 [geyser_source]
 type = "yellowstone"
 endpoint = "https://your-yellowstone-endpoint:443"

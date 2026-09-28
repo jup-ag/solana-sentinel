@@ -1,13 +1,12 @@
 [package]
-name = "system"
+name = "solana-sentinel-system"
 edition.workspace = true
 publish.workspace = true
 repository.workspace = true
 version.workspace = true
 
 [dependencies]
-interface = { workspace = true }
-observability = { workspace = true }
+solana-sentinel = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }

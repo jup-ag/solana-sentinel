@@ -56,5 +56,5 @@ COPY . .
 RUN cargo build --target ${TARGET} --release ${CARGOFLAGS}
 
 FROM alpine:3.18 AS runtime
-COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/solana_sentinel_* /usr/local/bin/
+COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/solana-sentinel* /usr/local/bin/
 RUN rm -rf /usr/local/bin/*.d

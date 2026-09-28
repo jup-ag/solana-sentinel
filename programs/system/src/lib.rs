@@ -3,12 +3,12 @@
 pub mod rules;
 
 use async_trait::async_trait;
-use interface::{
-    BootstrapCtx, GrpcSlotReader, PollCtx, PollRules, PollSource, Program, ProgramDeps, ProgramSpec,
-};
 use rules::slot_lag_detected::SlotLagDetected;
 use solana_account::Account;
 use solana_pubkey::Pubkey;
+use solana_sentinel::{
+    BootstrapCtx, GrpcSlotReader, PollCtx, PollRules, PollSource, Program, ProgramDeps, ProgramSpec,
+};
 use std::collections::HashMap;
 use std::time::Duration;
 

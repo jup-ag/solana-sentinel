@@ -1,13 +1,12 @@
 [package]
-name = "squads_v4"
+name = "solana-sentinel-squads-v4"
 edition.workspace = true
 publish.workspace = true
 repository.workspace = true
 version.workspace = true
 
 [dependencies]
-interface = { workspace = true }
-utility = { workspace = true }
+solana-sentinel = { workspace = true }
 
 anyhow = { workspace = true }
 borsh = { workspace = true, features = ["derive"] }
@@ -19,7 +18,7 @@ shipstern-parser = { workspace = true }
 shipstern-proc-macro = { workspace = true }
 
 [dev-dependencies]
-interface = { workspace = true, features = ["testing"] }
+solana-sentinel = { workspace = true, features = ["testing"] }
 tokio = { workspace = true }
 
 [lints]

@@ -2,12 +2,12 @@ pub mod parser;
 pub mod rules;
 
 use crate::parser::SquadsV4IxParser;
-use interface::{Program, ProgramSpec, StreamRules};
 use rules::new_member_addition::NewMemberAddition;
 use rules::new_proposal::NewProposal;
 use rules::threshold_change::ThresholdChange;
 use rules::timelock_change::TimelockChange;
 use solana_pubkey::{pubkey, Pubkey};
+use solana_sentinel::{Program, ProgramSpec, StreamRules};
 
 /// Snake_case identifier this program is known by in config and logs.
 pub const PROGRAM: Program = Program::new("squads_v4");

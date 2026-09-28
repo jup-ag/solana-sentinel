@@ -1,15 +1,14 @@
-# Copy this directory to programs/<name>, rename the package, and register
-# `<name>::spec` in programs/registry. See CONTRIBUTING.md.
+# Copy this directory into your deployment workspace, rename the package, and list
+# `<name>::spec` in your binary's PROGRAMS. See CONTRIBUTING.md.
 [package]
-name = "program_template"
+name = "solana-sentinel-program-template"
 edition.workspace = true
 publish.workspace = true
 repository.workspace = true
 version.workspace = true
 
 [dependencies]
-interface = { workspace = true }
-utility = { workspace = true }
+solana-sentinel = { workspace = true }
 
 anyhow = { workspace = true }
 serde = { workspace = true }
@@ -17,7 +16,7 @@ serde = { workspace = true }
 solana-pubkey = { workspace = true }
 
 [dev-dependencies]
-interface = { workspace = true, features = ["testing"] }
+solana-sentinel = { workspace = true, features = ["testing"] }
 tokio = { workspace = true }
 
 [lints]

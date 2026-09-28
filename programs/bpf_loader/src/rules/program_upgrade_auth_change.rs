@@ -1,10 +1,10 @@
 use crate::parser::ProgramMetadata;
 use crate::rules::WatchedPrograms;
 use async_trait::async_trait;
-use interface::{
+use solana_pubkey::Pubkey;
+use solana_sentinel::{
     Alert, BootstrapCtx, GrpcRule, Prefilter, RuleDef, RuleId, Severity, StateCache, StreamCtx,
 };
-use solana_pubkey::Pubkey;
 use std::collections::HashMap;
 
 #[derive(Debug)]

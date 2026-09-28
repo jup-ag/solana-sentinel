@@ -4,10 +4,10 @@
 
 pub mod rules;
 
-use interface::raw::{RawAccountParser, RawInstructionParser};
-use interface::{Program, ProgramSpec, StreamRules};
 use rules::account_lamports_below::AccountLamportsBelow;
 use rules::program_invoked::ProgramInvoked;
+use solana_sentinel::raw::{RawAccountParser, RawInstructionParser};
+use solana_sentinel::{Program, ProgramSpec, StreamRules};
 
 /// Snake_case identifier this program is known by in `rules.toml` and logs.
 pub const PROGRAM: Program = Program::new("template");

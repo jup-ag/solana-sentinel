@@ -1,16 +1,27 @@
 # Contributing
 
-The monitor is a set of *programs*, each a crate under `programs/`, each exporting one
-`spec()` that lists its parsers and the *rules* registered on them. The framework in
-`programs/interface` does everything else: typed config validation, shared-cache bootstrap,
-prefilter union, pipeline install, alert forwarding.
+Solana Sentinel is a library. A *deployment* is a small Cargo workspace that depends on it:
+a binary calling `solana_sentinel_service::run(RunOptions { service_name, programs })`, its own
+*program* crates, and its `config.toml` / `rules.toml`. This repo holds the framework
+(`crates/`), reusable programs (`programs/`) and a reference binary (`crates/cli`).
+
+A program is a crate exporting one `spec()` that lists its parsers and the *rules* registered on
+them. The core crate (`solana_sentinel`) does everything else: typed config validation,
+shared-cache bootstrap, prefilter union, pipeline install, alert forwarding.
+
+```
+[dependencies]                                   # in a deployment's Cargo.toml
+solana-sentinel = { git = "…/solana-sentinel" }          # rule traits, ProgramSpec, testing helpers
+solana-sentinel-service = { git = "…/solana-sentinel" }  # run(), config, validation
+solana-sentinel-spl-token = { git = "…/solana-sentinel" } # any bundled program you want
+```
 
 ## Run it locally
 
 ```sh
 cp config.example.toml config.toml   # point [rpc] and [geyser_source] at your endpoints
 make check-rules                     # validates rules.toml + config.toml, prints the resolved subscriptions, no network
-make run                   # RUST_LOG=info, alerts on the sinks rules.toml names
+make run                             # the reference binary with every bundled program
 ```
 
 For a local run use the `stdout` sink and leave `[redis]` and `[observability.betterstack]`
@@ -48,8 +59,8 @@ out of `config.toml`: gates become in-memory and no heartbeat is sent.
 2. Add `pub mod <rule>;` to `rules/mod.rs` and one `.register::<MyRule>()` line in `lib.rs::spec()`.
    Registering a `GrpcRule` on `.poll(..)` or an `RpcRule` on `.account(..)` is a compile error.
 3. Add the `[[rules]]` entry to `rules.toml`.
-4. Add a fixture test with `interface::testing` (`rule_from_toml`, `account_update`, `ix_update`,
-   `stream_ctx`, `assert_fires!`); `programs/_template` shows the shape.
+4. Add a fixture test with `solana_sentinel::testing` (`rule_from_toml`, `account_update`,
+   `ix_update`, `stream_ctx`, `assert_fires!`); `programs/_template` shows the shape.
 
 Guidance:
 
@@ -67,21 +78,22 @@ Guidance:
 
 ## Add a program
 
-1. `cp -r programs/_template programs/<name>`; set the package name in `Cargo.toml`, `PROGRAM`
-   in `lib.rs`, and replace the raw parsers with the program's codama parser
-   (`include_shipstern_parser!("idls/...json")`, see `squads_v4/src/parser.rs`).
-2. Add `<name> = { path = "programs/<name>" }` under `[workspace.dependencies]` in the root
-   `Cargo.toml`, and `<name> = { workspace = true }` in `programs/registry/Cargo.toml`.
-3. Add `<name>::spec` to `PROGRAMS` in `programs/registry/src/lib.rs`.
-4. Add the program to the README list.
+1. `cp -r programs/_template <your-workspace>/programs/<name>`; set the package name in
+   `Cargo.toml`, `PROGRAM` in `lib.rs`, and replace the raw parsers with the program's codama
+   parser (`include_shipstern_parser!("idls/...json")`, see `programs/squads_v4/src/parser.rs`).
+2. Add the crate to your workspace and to your binary's `Cargo.toml`.
+3. Add `<name>::spec` to the `PROGRAMS` list your binary passes to `run`.
 
-A program with a shared cache implements `ProgramDeps` (see `jup_lend/src/rules/cache.rs`) and
-calls `.deps::<Cache>()` before registering pipelines. `dynamic_prefilter` feeds every pipeline;
-`refresh_interval` + `refresh` push a changed set to the live subscription without a restart.
+A generic program (any Solana user could want it) belongs here under `programs/`, listed in
+`crates/cli/src/main.rs`; one specific to a protocol belongs in that deployment's workspace.
 
-A poll-fed program implements `PollSource` (see `jup_usd/src/parser.rs`) and registers
+A program with a shared cache implements `ProgramDeps` and calls `.deps::<Cache>()` before
+registering pipelines. `dynamic_prefilter` feeds every pipeline; `refresh_interval` + `refresh`
+push a changed set to the live subscription without a restart.
+
+A poll-fed program implements `PollSource` (see `programs/pyth/src/parser.rs`) and registers
 `RpcRule`s with `.poll(source, default_interval, rules)`. Rules on the same cadence share one
-`getMultipleAccounts` per tick.
+`getMultipleAccounts` per tick. `programs/system` is the smallest poll-fed program.
 
 ## Ingestion sources
 
@@ -90,10 +102,10 @@ Rules never see the transport. `[geyser_source]` picks it:
 | `type` | Path | Notes |
 |---|---|---|
 | `yellowstone` (alias `shipstern`) | shipstern runtime, its own dispatch and reconnect | production default |
-| `grpc` | `ingest::GrpcSource` → framework `Dispatcher` | plain Yellowstone client, honours filter updates |
-| `websocket` | `ingest::WebsocketSource` → `Dispatcher` | PubSub `accountSubscribe` / `programSubscribe` / `logsSubscribe` + `getTransaction`; commitment ≥ `confirmed` |
+| `grpc` | `solana_sentinel_ingest::GrpcSource` → framework `Dispatcher` | plain Yellowstone client, honours filter updates |
+| `websocket` | `solana_sentinel_ingest::WebsocketSource` → `Dispatcher` | PubSub `accountSubscribe` / `programSubscribe` / `logsSubscribe` + `getTransaction`; commitment ≥ `confirmed` |
 
-To add a transport, implement `interface::StreamSource`: receive the named filter set
+To add a transport, implement `solana_sentinel::StreamSource`: receive the named filter set
 (`shipstern_core::Filters`), emit `SourceUpdate { filters, update }` tagged with the names each
 update matched, and optionally react to later sets on the `watch` channel. The dispatcher does
 the rest, including building the instruction tree once per transaction.

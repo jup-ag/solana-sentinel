@@ -1,9 +1,11 @@
 # Solana Sentinel
 
-On-chain security monitoring and alerting for Jupiter Programs and services
+A framework for on-chain security monitoring and alerting on Solana.
 
-Ingests account/transaction updates via Yellowstone gRPC, evaluates them against
-typed per-program rulesets, and dispatches alerts to humans and storage.
+Ingests account / transaction updates (Yellowstone gRPC, websocket, or your own source),
+evaluates them against typed per-program rules, and dispatches alerts to humans and storage.
+Use it as a library from your own deployment workspace, or run the reference binary with the
+bundled programs.
 
 ## Architecture
 
@@ -17,6 +19,7 @@ RPC getMultipleAccounts ──────────────────�
 - **`RuleDef` + `GrpcRule` / `RpcRule`** — one rule, one file; typed config, static prefilter, `evaluate`.
 - **`ProgramDeps`** — a program's shared cache, bootstrapped before any rule; owns chain-discovered watch sets.
 - **`StreamSource`** — the transport (shipstern, plain gRPC, PubSub websocket, or your own); rules never see it.
+- **`solana_sentinel_service::run`** — the whole service behind one call; a deployment binary passes its name and program list.
 - **`Router`** — `HashMap<RuleId, Vec<SinkId>>` fan-out from rules to sinks.
 - **`AlertingService`** — dedups (cooldown + fleet gates), batches and forwards alerts to sinks.
 
@@ -28,21 +31,19 @@ for the design.
 ```sh
 cp config.example.toml config.toml
 make check-rules       # validate rules.toml + config.toml, print resolved subscriptions; no network
-make run
+make run               # reference binary, all bundled programs
 ```
 
 Local runs need only an RPC URL and a Yellowstone endpoint: use the `stdout` sink and omit
 `[redis]` and `[observability.betterstack]`.
 
-## Monitored programs
+## Bundled programs
 
 - Squads V4 multisig
 - Pyth oracle feeds
 - SPL token mints
 - BPF Loader Upgradeable
-- JupUSD
-- JupLend
-- Sentinel — not an on-chain program; watches multisig member wallets and Anchor IDL admin calls
+- Sentinel (`programs/watchlist`) — not an on-chain program; watches member wallets and Anchor IDL admin calls
 - System — not an on-chain program; service health (gRPC slot lag vs RPC)
 
 ## Configuration

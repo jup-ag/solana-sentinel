@@ -1,10 +1,10 @@
 #![allow(clippy::derive_partial_eq_without_eq)]
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use interface::{PollCtx, PollSource};
 use shipstern_core::{AccountUpdate, ParseResult, Parser, Prefilter};
 use solana_account::Account;
 use solana_pubkey::Pubkey;
+use solana_sentinel::{PollCtx, PollSource};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use tracing::warn;

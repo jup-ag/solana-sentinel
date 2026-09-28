@@ -1,10 +1,10 @@
 //! Account rule: alert when a watched account's balance drops below a floor.
 
-use interface::raw::RawAccount;
-use interface::{Alert, GrpcRule, Prefilter, RuleDef, RuleId, Severity, StreamCtx};
 use serde::Deserialize;
 use solana_pubkey::Pubkey;
-use utility::pubkey::deserialize_pubkey_vec;
+use solana_sentinel::raw::RawAccount;
+use solana_sentinel::utility::pubkey::deserialize_pubkey_vec;
+use solana_sentinel::{Alert, GrpcRule, Prefilter, RuleDef, RuleId, Severity, StreamCtx};
 
 #[derive(Debug, Deserialize)]
 pub struct AccountLamportsBelowConfig {
@@ -61,8 +61,8 @@ impl GrpcRule for AccountLamportsBelow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use interface::raw::RawAccountParser;
-    use interface::testing::{account_update, parse, rule_from_toml, stream_ctx};
+    use solana_sentinel::raw::RawAccountParser;
+    use solana_sentinel::testing::{account_update, parse, rule_from_toml, stream_ctx};
 
     #[tokio::test]
     async fn fires_when_balance_is_below_floor() {
@@ -74,7 +74,7 @@ mod tests {
         update.account.as_mut().unwrap().lamports = 999;
         let event = parse(&RawAccountParser, &update).await;
 
-        let alert = interface::assert_fires!(rule, event, stream_ctx(1, Some("sig")));
+        let alert = solana_sentinel::assert_fires!(rule, event, stream_ctx(1, Some("sig")));
         assert_eq!(alert.metadata["lamports"], "999");
     }
 }
