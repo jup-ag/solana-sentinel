@@ -25,8 +25,6 @@ spec().poll(source, default_interval, PollRules::new().register::<R>())
 - `cooldown_period_seconds` should exceed the poll interval, or a persistent condition fires
   every tick.
 
-Bundled programs with poll feeds: `pyth` (staleness) and `system` (slot lag).
-
 ## Stream sources
 
 The stream feed is transport-agnostic. `[geyser_source].type` selects:

@@ -4237,7 +4237,7 @@ dependencies = [
  "solana-epoch-schedule",
  "solana-fee-calculator",
  "solana-instruction",
- "solana-loader-v3-interface 6.1.1",
+ "solana-loader-v3-interface",
  "solana-nonce",
  "solana-program-option",
  "solana-program-pack",
@@ -4390,7 +4390,7 @@ dependencies = [
  "solana-pubkey 3.0.0",
  "solana-sdk-ids",
  "solana-short-vec",
- "solana-system-interface 2.0.0",
+ "solana-system-interface",
 ]
 
 [[package]]
@@ -4569,7 +4569,6 @@ dependencies = [
  "solana-define-syscall 5.1.0",
  "solana-instruction-error",
  "solana-pubkey 4.2.0",
- "wincode",
 ]
 
 [[package]]
@@ -4626,19 +4625,6 @@ dependencies = [
  "solana-instruction",
  "solana-pubkey 4.2.0",
  "solana-sdk-ids",
-]
-
-[[package]]
-name = "solana-loader-v3-interface"
-version = "8.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "362b468fbde4c20521b9ff5ef743bc0d9b410455a5a92a8b29fd46954e89345f"
-dependencies = [
- "solana-instruction",
- "solana-pubkey 4.2.0",
- "solana-sdk-ids",
- "solana-system-interface 3.2.0",
- "wincode",
 ]
 
 [[package]]
@@ -5008,38 +4994,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "solana-sentinel-bpf-loader"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "serde",
- "shipstern-core",
- "solana-loader-v3-interface 8.0.1",
- "solana-pubkey 3.0.0",
- "solana-rpc-client",
- "solana-sentinel",
- "tracing",
- "wincode",
-]
-
-[[package]]
-name = "solana-sentinel-cli"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "solana-sentinel",
- "solana-sentinel-bpf-loader",
- "solana-sentinel-pyth",
- "solana-sentinel-service",
- "solana-sentinel-spl-token",
- "solana-sentinel-squads-v4",
- "solana-sentinel-system",
- "solana-sentinel-watchlist",
- "tokio",
-]
-
-[[package]]
 name = "solana-sentinel-domain"
 version = "0.0.1"
 dependencies = [
@@ -5118,34 +5072,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "solana-sentinel-program-template"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "serde",
- "solana-pubkey 3.0.0",
- "solana-sentinel",
- "tokio",
-]
-
-[[package]]
-name = "solana-sentinel-pyth"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "borsh",
- "bs58",
- "bytemuck",
- "chrono",
- "serde",
- "shipstern-core",
- "solana-account",
- "solana-pubkey 3.0.0",
- "solana-sentinel",
- "tracing",
-]
-
-[[package]]
 name = "solana-sentinel-service"
 version = "0.0.1"
 dependencies = [
@@ -5176,47 +5102,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "solana-sentinel-spl-token"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "serde",
- "shipstern-spl-token-parser",
- "solana-pubkey 3.0.0",
- "solana-sentinel",
- "tracing",
-]
-
-[[package]]
-name = "solana-sentinel-squads-v4"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "borsh",
- "serde",
- "shipstern-core",
- "shipstern-parser",
- "shipstern-proc-macro",
- "solana-pubkey 3.0.0",
- "solana-sentinel",
- "tokio",
-]
-
-[[package]]
-name = "solana-sentinel-system"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "serde",
- "solana-account",
- "solana-pubkey 3.0.0",
- "solana-sentinel",
- "tracing",
-]
-
-[[package]]
 name = "solana-sentinel-utility"
 version = "0.0.1"
 dependencies = [
@@ -5241,19 +5126,6 @@ dependencies = [
  "tokio",
  "tracing",
  "yellowstone-grpc-proto",
-]
-
-[[package]]
-name = "solana-sentinel-watchlist"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "serde",
- "solana-pubkey 3.0.0",
- "solana-sdk-ids",
- "solana-sentinel",
- "solana-system-interface 3.2.0",
- "wincode",
 ]
 
 [[package]]
@@ -5371,7 +5243,7 @@ dependencies = [
  "solana-instruction",
  "solana-program-error",
  "solana-pubkey 3.0.0",
- "solana-system-interface 2.0.0",
+ "solana-system-interface",
  "solana-sysvar",
  "solana-sysvar-id",
 ]
@@ -5395,20 +5267,6 @@ dependencies = [
  "solana-msg",
  "solana-program-error",
  "solana-pubkey 3.0.0",
-]
-
-[[package]]
-name = "solana-system-interface"
-version = "3.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55b54965bf0b76fa8e2b35376583efddd4d916618cfe595bf48c7d7b55a9e628"
-dependencies = [
- "num-traits",
- "solana-address 2.6.0",
- "solana-instruction",
- "solana-msg",
- "solana-program-error",
- "wincode",
 ]
 
 [[package]]
@@ -5565,7 +5423,7 @@ dependencies = [
  "solana-serde-varint",
  "solana-serialize-utils",
  "solana-short-vec",
- "solana-system-interface 2.0.0",
+ "solana-system-interface",
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
 .PHONY: help lint fmt fmt-check clippy ensure-nightly \
         ch ch-query ch-migrate ch-migrations \
-        run run-release check-rules run-tests run-tests-integration
+        run-tests run-tests-integration
 
 # ---- config ----------------------------------------------------------------
 CARGO              ?= cargo
@@ -18,7 +18,6 @@ CLICKHOUSE_PASSWORD?= password
 CLICKHOUSE_CONTAINER ?= solana-sentinel-clickhouse-1
 
 RUST_LOG           ?= info
-CONFIG_FILE        ?= ./config.toml
 
 # ---- targets ---------------------------------------------------------------
 
@@ -34,10 +33,9 @@ help: ## Show this help message
 	@printf "  %-14s %s\n" "ch-query"      "Run a one-off query (Q=\"...\")"
 	@printf "  %-14s %s\n" "ch-migrate"    "Apply pending ClickHouse migrations"
 	@printf "  %-14s %s\n" "ch-migrations" "Show applied migrations"
-	@printf "\nSolana Sentinel:\n"
-	@printf "  %-20s %s\n" "run"                 "Run the service (debug profile)"
-	@printf "  %-20s %s\n" "run-release"         "Run the service (release profile)"
-	@printf "  %-20s %s\n" "check-rules"           "Validate rules.toml against the registry (no network)"
+	@printf "
+Tests:
+"
 	@printf "  %-20s %s\n" "run-tests"             "Run the workspace test suite (no Docker needed)"
 	@printf "  %-20s %s\n" "run-tests-integration" "Run the Redis-backed alerting tests (needs Docker)"
 	@printf "\nVariables:\n"
@@ -116,24 +114,6 @@ ch-migrations: ## Show applied migrations
 		--password $(CLICKHOUSE_PASSWORD) \
 		--database $(CLICKHOUSE_DATABASE) \
 		--query "SELECT version, name, applied_on FROM refinery_schema_history ORDER BY version FORMAT PrettyCompact"
-
-# ---- solana-sentinel ---------------------------------------------------------------
-
-run: ## Run the solana-sentinel binary (debug profile)
-	@printf "Starting solana-sentinel (debug) with config %s...\n" "$(CONFIG_FILE)"
-	@CONFIG_FILE=$(CONFIG_FILE) \
-		RUST_LOG=$(RUST_LOG) \
-		$(CARGO) run --bin solana-sentinel
-
-run-release: ## Run the solana-sentinel binary (release profile)
-	@printf "Starting solana-sentinel (release) with config %s...\n" "$(CONFIG_FILE)"
-	@CONFIG_FILE=$(CONFIG_FILE) \
-		RUST_LOG=$(RUST_LOG) \
-		$(CARGO) run --bin solana-sentinel --release
-
-check-rules: ## Validate rules.toml + config.toml without connecting anywhere
-	@CONFIG_FILE=$(CONFIG_FILE) RUST_LOG=$(RUST_LOG) \
-		$(CARGO) run --bin solana-sentinel -- check
 
 run-tests: ## Run the workspace test suite
 	@printf "Running tests...\n"

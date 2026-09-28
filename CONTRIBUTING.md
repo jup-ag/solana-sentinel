@@ -1,9 +1,9 @@
 # Contributing
 
-Solana Sentinel is a library. A *deployment* is a small Cargo workspace that depends on it:
-a binary calling `solana_sentinel_service::run(RunOptions { service_name, programs })`, its own
-*program* crates, and its `config.toml` / `rules.toml`. This repo holds the framework
-(`crates/`), reusable programs (`programs/`) and a reference binary (`crates/cli`).
+Solana Sentinel is a library; this repo holds only the framework crates under `crates/`.
+A *deployment* is a small Cargo workspace that depends on it: a binary calling
+`solana_sentinel_service::run(RunOptions { service_name, programs })`, its own *program*
+crates, and its `config.toml` / `rules.toml`.
 
 A program is a crate exporting one `spec()` that lists its parsers and the *rules* registered on
 them. The core crate (`solana_sentinel`) does everything else: typed config validation,
@@ -13,23 +13,34 @@ shared-cache bootstrap, prefilter union, pipeline install, alert forwarding.
 [dependencies]                                   # in a deployment's Cargo.toml
 solana-sentinel = { git = "…/solana-sentinel" }          # rule traits, ProgramSpec, testing helpers
 solana-sentinel-service = { git = "…/solana-sentinel" }  # run(), config, validation
-solana-sentinel-spl-token = { git = "…/solana-sentinel" } # any bundled program you want
+solana-sentinel-migration = { git = "…/solana-sentinel" } # ClickHouse migrations for the alerts sink
 ```
 
-## Run it locally
+```rust
+// src/main.rs of a deployment
+use solana_sentinel::ProgramSpec;
+use solana_sentinel_service::{run, RunOptions};
 
-```sh
-cp config.example.toml config.toml   # point [rpc] and [geyser_source] at your endpoints
-make check-rules                     # validates rules.toml + config.toml, prints the resolved subscriptions, no network
-make run                             # the reference binary with every bundled program
+const PROGRAMS: &[fn() -> ProgramSpec] = &[my_program::spec, my_other_program::spec];
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    run(RunOptions { service_name: "my_monitor", programs: PROGRAMS }).await
+}
 ```
 
-For a local run use the `stdout` sink and leave `[redis]` and `[observability.betterstack]`
-out of `config.toml`: gates become in-memory and no heartbeat is sent.
+`my_monitor check` validates `rules.toml` + `config.toml` and prints the resolved
+subscriptions without connecting anywhere.
+
+## Run a deployment locally
+
+Copy `config.example.toml` to your deployment as `config.toml`, point `[rpc]` and
+`[geyser_source]` at your endpoints, use the `stdout` sink, and leave `[redis]` and
+`[observability.betterstack]` out: gates become in-memory and no heartbeat is sent.
 
 ## Add a rule
 
-1. Create `programs/<program>/src/rules/<rule>.rs`:
+1. Create `<rule>.rs` in the program crate's `rules/` module:
 
    ```rust
    #[derive(Debug, Deserialize)]
@@ -60,7 +71,7 @@ out of `config.toml`: gates become in-memory and no heartbeat is sent.
    Registering a `GrpcRule` on `.poll(..)` or an `RpcRule` on `.account(..)` is a compile error.
 3. Add the `[[rules]]` entry to `rules.toml`.
 4. Add a fixture test with `solana_sentinel::testing` (`rule_from_toml`, `account_update`,
-   `ix_update`, `stream_ctx`, `assert_fires!`); `programs/_template` shows the shape.
+   `ix_update`, `stream_ctx`, `assert_fires!`); enable the `testing` feature in dev-dependencies.
 
 Guidance:
 
@@ -78,22 +89,32 @@ Guidance:
 
 ## Add a program
 
-1. `cp -r programs/_template <your-workspace>/programs/<name>`; set the package name in
-   `Cargo.toml`, `PROGRAM` in `lib.rs`, and replace the raw parsers with the program's codama
-   parser (`include_shipstern_parser!("idls/...json")`, see `programs/squads_v4/src/parser.rs`).
-2. Add the crate to your workspace and to your binary's `Cargo.toml`.
-3. Add `<name>::spec` to the `PROGRAMS` list your binary passes to `run`.
+A program crate is `lib.rs` with `PROGRAM` and `spec()`, a parser (a codama parser via
+`include_shipstern_parser!("idls/...json")`, or the framework's raw parsers in
+`solana_sentinel::raw`), and one file per rule:
 
-A generic program (any Solana user could want it) belongs here under `programs/`, listed in
-`crates/cli/src/main.rs`; one specific to a protocol belongs in that deployment's workspace.
+```rust
+pub const PROGRAM: Program = Program::new("my_program");
+
+pub fn spec() -> ProgramSpec {
+    ProgramSpec::builder(PROGRAM)
+        .account(MyAccountParser::new(), StreamRules::new().register::<MyAccountRule>())
+        .instruction(MyIxParser::new(), StreamRules::new().register::<MyIxRule>())
+        .poll(MySource, Duration::from_secs(60), PollRules::new().register::<MyPollRule>())
+        .finish()
+}
+```
+
+1. Add the crate to your deployment workspace and to your binary's `Cargo.toml`.
+2. Add `<name>::spec` to the `PROGRAMS` list your binary passes to `run`.
 
 A program with a shared cache implements `ProgramDeps` and calls `.deps::<Cache>()` before
 registering pipelines. `dynamic_prefilter` feeds every pipeline; `refresh_interval` + `refresh`
 push a changed set to the live subscription without a restart.
 
-A poll-fed program implements `PollSource` (see `programs/pyth/src/parser.rs`) and registers
-`RpcRule`s with `.poll(source, default_interval, rules)`. Rules on the same cadence share one
-`getMultipleAccounts` per tick. `programs/system` is the smallest poll-fed program.
+A poll-fed program implements `PollSource` and registers `RpcRule`s with
+`.poll(source, default_interval, rules)`. Rules on the same cadence share one
+`getMultipleAccounts` per tick.
 
 ## Ingestion sources
 

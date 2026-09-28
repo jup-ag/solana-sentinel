@@ -4,8 +4,8 @@ A framework for on-chain security monitoring and alerting on Solana.
 
 Ingests account / transaction updates (Yellowstone gRPC, websocket, or your own source),
 evaluates them against typed per-program rules, and dispatches alerts to humans and storage.
-Use it as a library from your own deployment workspace, or run the reference binary with the
-bundled programs.
+It is a library: a deployment workspace depends on it, adds its own program crates, and
+calls `solana_sentinel_service::run` from a tiny binary.
 
 ## Architecture
 
@@ -26,25 +26,11 @@ RPC getMultipleAccounts ──────────────────�
 See `CONTRIBUTING.md` for adding a rule or a program, and `docs/rfc-adapters-and-wiring.md`
 for the design.
 
-## Running
+## Using it
 
-```sh
-cp config.example.toml config.toml
-make check-rules       # validate rules.toml + config.toml, print resolved subscriptions; no network
-make run               # reference binary, all bundled programs
-```
-
-Local runs need only an RPC URL and a Yellowstone endpoint: use the `stdout` sink and omit
-`[redis]` and `[observability.betterstack]`.
-
-## Bundled programs
-
-- Squads V4 multisig
-- Pyth oracle feeds
-- SPL token mints
-- BPF Loader Upgradeable
-- Sentinel (`programs/watchlist`) — not an on-chain program; watches member wallets and Anchor IDL admin calls
-- System — not an on-chain program; service health (gRPC slot lag vs RPC)
+See `CONTRIBUTING.md`: it shows the deployment binary, how to write a program and a rule,
+and the ingestion sources. `config.example.toml` documents every service setting;
+`<binary> check` validates a deployment's `rules.toml` without connecting anywhere.
 
 ## Configuration
 
@@ -53,9 +39,9 @@ Split by sensitivity:
 | File | Contents | Source |
 |---|---|---|
 | `config.toml` | secrets, connection strings | your secret store (gitignored) |
-| `rules.toml` | rule definitions, thresholds | version-controlled |
+| `rules.toml` | rule definitions, thresholds | version-controlled in the deployment |
 
-`rules.toml` ships as a trimmed example; point `RULES_FILE` at your own file per environment.
+Both live in the deployment workspace; `CONFIG_FILE` / `RULES_FILE` override the default paths.
 
 ## Storage & observability
 

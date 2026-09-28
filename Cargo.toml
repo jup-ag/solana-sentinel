@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*", "programs/*"]
+members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
@@ -27,13 +27,6 @@ ingest = { path = "crates/ingest", package = "solana-sentinel-ingest" }
 solana-sentinel-service = { path = "crates/service" }
 solana-sentinel-migration = { path = "crates/migration" }
 
-# Bundled programs; a deployment lists the ones it runs in its own registry.
-solana-sentinel-squads-v4 = { path = "programs/squads_v4" }
-solana-sentinel-spl-token = { path = "programs/spl_token" }
-solana-sentinel-watchlist = { path = "programs/watchlist" }
-solana-sentinel-pyth = { path = "programs/pyth" }
-solana-sentinel-bpf-loader = { path = "programs/bpf_loader" }
-solana-sentinel-system = { path = "programs/system" }
 
 # Solana
 solana-pubkey = "3.0.0"
