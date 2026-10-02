@@ -51,8 +51,8 @@ impl SentinelConfig {
     }
 
     /// `None` means no Redis: in-memory gates and no slot checkpoint (local runs).
-    pub fn redis(&self) -> Option<&RedisConfig> {
-        self.service.redis.as_ref()
+    pub fn redis(&self) -> &RedisConfig {
+        &self.service.redis
     }
 
     pub fn alerting(&self) -> &AlertingConfig {
@@ -60,7 +60,7 @@ impl SentinelConfig {
     }
 }
 
-/// Group rules by program, keeping the order programs first appear in `rules.toml`.
+/// Group rules by program, keeping the order programs first appear in the rules files.
 fn map_programs_with_rules(rules: Vec<RuleConfig>) -> Vec<ProgramRules> {
     let mut out: Vec<ProgramRules> = Vec::new();
     for r in rules {

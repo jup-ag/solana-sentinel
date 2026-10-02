@@ -82,7 +82,7 @@ impl SlotTracker {
     /// tracker is in-memory only and every start is a fresh start.
     pub async fn try_init(
         rpc: &RpcClient,
-        redis_conn: Option<ConnectionManager>,
+        redis_conn: ConnectionManager,
         pod_id: &str,
         cancel_token: CancellationToken,
         tracker: &TaskTracker,
@@ -167,10 +167,6 @@ impl SlotTracker {
             cancel_token,
             first_grpc_slot_seen,
         } = self.clone();
-        if !slot_checkpoint.is_persistent() {
-            info!("No sidecar Redis configured; slot checkpoints are not persisted");
-            return;
-        }
         info!(
             "Starting slot checkpoint recorder task with interval: {:?}",
             SLOT_CHECKPOINT_RECORD_INTERVAL
@@ -254,7 +250,7 @@ impl LastSeenGrpcSlot {
 
 #[derive(Clone)]
 struct SlotCheckpoint {
-    redis_conn: Option<ConnectionManager>,
+    redis_conn: ConnectionManager,
     redis_key: String,
 }
 
@@ -265,7 +261,7 @@ impl fmt::Debug for SlotCheckpoint {
 }
 
 impl SlotCheckpoint {
-    pub fn new(conn: Option<ConnectionManager>, pod_id: &str) -> Self {
+    pub fn new(conn: ConnectionManager, pod_id: &str) -> Self {
         let redis_key = format!("{pod_id}:{SLOT_CHECKPOINT_KEY_REDIS}");
         Self {
             redis_conn: conn,
@@ -273,25 +269,18 @@ impl SlotCheckpoint {
         }
     }
 
-    fn is_persistent(&self) -> bool {
-        self.redis_conn.is_some()
-    }
-
     /// Fire-and-forget persist; failures are logged, not propagated, since the
     /// recorder loop should keep running regardless.
     pub async fn write(&self, slot: u64) {
-        let Some(conn) = &self.redis_conn else {
-            return;
-        };
-        let mut conn = conn.clone();
+        let mut conn = self.redis_conn.clone();
         if let Err(e) = conn.set::<_, _, ()>(&self.redis_key, slot).await {
             error!("Failed to persist slot {} to checkpoint: {}", slot, e);
         }
     }
 
-    /// Returns the checkpointed slot, or `None` if unset, not persisted, or on error.
+    /// Returns the checkpointed slot, or `None` if unset or on error.
     pub async fn read(&self) -> Option<u64> {
-        let mut conn = self.redis_conn.clone()?;
+        let mut conn = self.redis_conn.clone();
         match conn.get::<_, Option<u64>>(&self.redis_key).await {
             Ok(slot) => slot,
             Err(e) => {

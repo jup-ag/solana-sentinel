@@ -1,7 +1,7 @@
 # Architecture
 
 ```
-  config.toml (sources, sinks, redis)   rules.toml (rules, thresholds)
+  config.toml (sources, sinks, redis)   rules/*.toml (rules, thresholds)
                    └─────────────────┬─────────────────┘
                                      ▼
              ┌────────────────── programs ───────────────────┐
@@ -24,16 +24,20 @@
                                      ▼
               ┌───────────────── alerting ──────────────────┐
               │                                             │
-              │     ╔═════════ COOLDOWN GATE ═════════╗     │
-              │     ║ same alert again within its     ║     │
-              │     ║ cooldown window?  drop it       ║     │
-              │     ║ per node · per rule · sidecar   ║     │
-              │     ╚════════════════╤════════════════╝     │
-              │                      ▼                      │
-              │     ┌────────── fleet gate ───────────┐     │
-              │     │ another node already sent it?   │     │
-              │     │ drop it · shared Redis          │     │
-              │     └────────────────┬────────────────┘     │
+              │  ╔════════════ COOLDOWN GATE ════════════╗  │
+              │  ║                                       ║  │
+              │  ║  ┌─────────── local gate ──────────┐  ║  │
+              │  ║  │ same alert again within its     │  ║  │
+              │  ║  │ cooldown window?  drop it       │  ║  │
+              │  ║  │ per node · per rule · sidecar   │  ║  │
+              │  ║  └────────────────┬────────────────┘  ║  │
+              │  ║                   ▼                   ║  │
+              │  ║  ┌─────────── fleet gate ──────────┐  ║  │
+              │  ║  │ another node already sent it?   │  ║  │
+              │  ║  │ drop it · shared Redis          │  ║  │
+              │  ║  └────────────────┬────────────────┘  ║  │
+              │  ║                   │                   ║  │
+              │  ╚═══════════════════╪═══════════════════╝  │
               │                      ▼                      │
               │                route by rule                │
               └──────────────────────┬──────────────────────┘

@@ -1,8 +1,11 @@
 //! Translates a parsed [`SentinelConfig`] into a fully wired alerting
-//! [`Router`], validating along the way.
+//! [`Router`] and [`CooldownGate`], validating along the way.
 
 use crate::config::service::{BetterstackSinkConfig, ClickhouseConfig, SinkConfig, SlackConfig};
 use crate::config::{ProgramRules, SentinelConfig};
+use alerting::cooldown_gate::CooldownGate;
+use alerting::fleet_gate::FleetGate;
+use alerting::local_gate::LocalGate;
 use alerting::router::Router;
 use alerting::sinks::betterstack::BetterstackSink;
 use alerting::sinks::clickhouse::ClickhouseSink;
@@ -12,10 +15,14 @@ use alerting::sinks::{AlertSink, AlertSinkError};
 use domain::programs::Program;
 use domain::rules::RuleId;
 use domain::sinks::SinkId;
+use redis::aio::ConnectionManager;
+use redis::cluster::ClusterClient;
+use redis::cluster_async::ClusterConnection;
 use solana_sentinel::{RuleConfigError, ValidatedProgram};
 use std::collections::HashMap;
 use std::time::Duration;
 use thiserror::Error;
+use tracing::info;
 
 #[derive(Debug, Error)]
 pub enum WiringError {
@@ -120,8 +127,51 @@ fn build_betterstack(cfg: &BetterstackSinkConfig) -> Result<BetterstackSink, Wir
     })
 }
 
+/// Builds the local and fleet cooldown gates from `[alerting.cooldown_gate]`. The local
+/// gate uses the sidecar Redis; the fleet gate uses `redis_fleet_url` when set and
+/// process memory otherwise.
+pub async fn build_cooldown_gate(
+    config: &SentinelConfig,
+    cooldowns: Cooldowns,
+    sidecar: &ConnectionManager,
+    pod_id: &str,
+    service_name: &str,
+) -> anyhow::Result<CooldownGate> {
+    let gates = &config.alerting().cooldown_gate;
+
+    let local_gate = gates
+        .local_gate
+        .then(|| LocalGate::new(sidecar.clone(), cooldowns.clone(), pod_id, service_name));
+
+    let fleet_url = config.redis().redis_fleet_url.as_deref();
+    let fleet_gate = match (gates.fleet_gate, fleet_url) {
+        (false, _) => None,
+        (true, Some(url)) => {
+            let fleet = connect_to_redis_cluster(url).await?;
+            Some(FleetGate::new(fleet, cooldowns, service_name))
+        }
+        (true, None) => {
+            info!("No redis_fleet_url configured; fleet gate dedups within this process only");
+            Some(FleetGate::in_memory(cooldowns))
+        }
+    }
+    .map(|g| g.with_default_ttl(Duration::from_secs(gates.fleet_gate_default_ttl_seconds)));
+
+    Ok(CooldownGate::new(local_gate, fleet_gate))
+}
+
+// Connects to a cluster-mode Redis (ElastiCache CME) with timeouts and retries.
+async fn connect_to_redis_cluster(redis_url: &str) -> anyhow::Result<ClusterConnection> {
+    let client = ClusterClient::builder(vec![redis_url])
+        .connection_timeout(Duration::from_secs(2))
+        .response_timeout(Duration::from_secs(1)) // per-attempt
+        .retries(1)
+        .build()?;
+    Ok(client.get_async_connection().await?)
+}
+
 type Routes = HashMap<RuleId, Vec<SinkId>>;
-type Cooldowns = HashMap<RuleId, Duration>;
+pub type Cooldowns = HashMap<RuleId, Duration>;
 
 /// Routes and cooldowns for every configured rule. Rule identity comes from the
 /// validated programs, so every route here is a rule that will actually run.

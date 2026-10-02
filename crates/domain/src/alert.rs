@@ -109,7 +109,7 @@ pub struct Alert {
     pub severity: Severity,
     pub message: String,
     pub metadata: BTreeMap<String, String>,
-    pub cooldown_gate_key: DedupKey,
+    pub local_gate_key: DedupKey,
     pub fleet_gate_key: DedupKey,
     pub scope: DedupScope,
     pub fired_at: DateTime<Utc>,
@@ -131,7 +131,7 @@ impl Alert {
 
         let message = message.into();
 
-        let cooldown_gate_key = derive_cooldown_gate_dedup_key(rule, hash_key);
+        let local_gate_key = derive_local_gate_dedup_key(rule, hash_key);
 
         let fleet_gate_key = derive_fleet_gate_dedup_key(rule, hash_key, &scope);
 
@@ -141,7 +141,7 @@ impl Alert {
             severity,
             message,
             metadata,
-            cooldown_gate_key,
+            local_gate_key,
             fleet_gate_key,
             scope,
             fired_at: Utc::now(),
@@ -153,8 +153,8 @@ impl Alert {
         self.rule.program
     }
 
-    pub fn cooldown_gate_key(&self) -> &DedupKey {
-        &self.cooldown_gate_key
+    pub fn local_gate_key(&self) -> &DedupKey {
+        &self.local_gate_key
     }
 
     pub fn fleet_gate_key(&self) -> &DedupKey {
@@ -164,7 +164,7 @@ impl Alert {
 
 // Layer 1 — intra-node dedup. Identifies a single alert occurrence as seen
 // by one node and is used to gate repeated alerts from the same node within a cooldown period.
-pub fn derive_cooldown_gate_dedup_key(rule: RuleId, hash_key: &HashKey) -> DedupKey {
+pub fn derive_local_gate_dedup_key(rule: RuleId, hash_key: &HashKey) -> DedupKey {
     let mut hasher = sha2::Sha256::new();
     hash_condition(&mut hasher, rule, hash_key);
     let key = hex::encode(hasher.finalize());

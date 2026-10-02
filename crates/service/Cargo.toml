@@ -28,6 +28,7 @@ shipstern = { workspace = true }
 shipstern-core = { workspace = true }
 shipstern-slot-parser = { workspace = true }
 solana-rpc-client = { workspace = true }
+reqwest = { workspace = true }
 
 rustls = { workspace = true }
 thiserror = { workspace = true }

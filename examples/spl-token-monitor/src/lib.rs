@@ -12,10 +12,10 @@ use solana_sentinel::{PollCtx, PollRules, PollSource, Program, ProgramSpec, Stre
 use std::collections::HashMap;
 use std::time::Duration;
 
-/// What `rules.toml` calls this program in `program = "..."`.
+/// What the rules files call this program in `program = "..."`.
 pub const PROGRAM: Program = Program::new("spl_token");
 
-/// Every feed the program exposes and every rule that can run on it. `rules.toml`
+/// Every feed the program exposes and every rule that can run on it. The rules files
 /// picks which rules are active; an unregistered rule name is a startup error.
 pub fn spec() -> ProgramSpec {
     ProgramSpec::new(PROGRAM)
