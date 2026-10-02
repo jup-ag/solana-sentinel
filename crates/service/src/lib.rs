@@ -75,10 +75,7 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
     let redis_sidecar_conn = match config.redis() {
         Some(redis) => Some(connect_to_redis(&redis.redis_sidecar_url).await?),
         None => {
-            info!(
-                "No [redis] configured; gates run in-memory and the slot checkpoint is not \
-                 persisted"
-            );
+            info!("No [redis] configured; gates run in-memory and the slot checkpoint is not persisted");
             None
         }
     };
