@@ -31,6 +31,8 @@ sources_channel_size = 50000
 # RPC endpoint for on-demand queries (e.g. fetching account data).
 [rpc]
 url = "https://api.mainnet-beta.solana.com"
+# Optional: sent as the x-identity header on every RPC request.
+# identity = "sentinel"
 
 # Observability configuration.
 [observability.server]
@@ -116,11 +118,11 @@ incident_auth_token = "REPLACE_ME"
 escalation_policy_id = "REPLACE_ME"
 requester_email = "REPLACE_ME"
 
-# Optional; shown with defaults. Two dedup layers run before an alert reaches a sink:
-# the cooldown gate (this node, within the rule's `cooldown_period_seconds`) and the
-# fleet gate (any node). Set either to false to skip that check entirely.
-[alerting]
-cooldown_gate = true
+# Optional; shown with defaults. The cooldown gate dedups an alert before it reaches a
+# sink, in two layers: the local gate (this node, within the rule's
+# `cooldown_period_seconds`) and the fleet gate (any node). Set either to false to skip it.
+[alerting.cooldown_gate]
+local_gate = true
 fleet_gate = true
 # Fleet gate claim TTL for rules that set no `cooldown_period_seconds`.
 fleet_gate_default_ttl_seconds = 600
@@ -128,7 +130,7 @@ fleet_gate_default_ttl_seconds = 600
 # Optional. Without `[redis]` the enabled gates are in-memory and the slot
 # checkpoint is not persisted: fine for one local process, not for a fleet.
 [redis]
-# Per-pod sidecar Redis for the slot checkpoint and the cooldown gate.
+# Per-pod sidecar Redis for the slot checkpoint and the local gate.
 redis_sidecar_url = "redis://localhost:6379"
 # Optional fleet-wide Redis cluster for the fleet gate. Without it the fleet
 # gate still runs, but dedups within this process only.

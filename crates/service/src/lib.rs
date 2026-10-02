@@ -6,11 +6,13 @@ pub mod consumer;
 pub mod validate;
 pub mod wiring;
 
+use crate::config::service::RpcConfig;
 use crate::config::SentinelConfig;
 use crate::consumer::ConsumerService;
 use crate::validate::validate_programs;
 use alerting::cooldown_gate::CooldownGate;
 use alerting::fleet_gate::FleetGate;
+use alerting::local_gate::LocalGate;
 use alerting::service::AlertingService;
 use anyhow::Context;
 use observability::slot_tracker::SlotTracker;
@@ -18,7 +20,10 @@ use observability::{prometheus, run_observability_stack, HeartbeatSettings};
 use redis::aio::{ConnectionManager, ConnectionManagerConfig};
 use redis::cluster::ClusterClient;
 use redis::cluster_async::ClusterConnection;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use solana_rpc_client::http_sender::HttpSender;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
+use solana_rpc_client::rpc_client::RpcClientConfig;
 use solana_sentinel::ProgramSpec;
 use std::sync::Arc;
 use std::time::Duration;
@@ -62,7 +67,7 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
 
     let cancel_token = CancellationToken::new();
     let tracker = TaskTracker::new();
-    let rpc = Arc::new(RpcClient::new(config.rpc().url.to_string()));
+    let rpc = Arc::new(build_rpc_client(config.rpc())?);
 
     // Extract the pod ID from the environment (hostname) for use in Redis keys as a namespace
     let pod_id = extract_pod_id()?;
@@ -70,7 +75,7 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
 
     let (router, cooldowns) = wiring::build_alerting_router(&config, &programs)?;
 
-    // Sidecar Redis holds per-pod state (slot checkpoint, cooldown gate); fleet Redis the shared
+    // Sidecar Redis holds per-pod state (slot checkpoint, local gate); fleet Redis the shared
     // gate. Without `[redis]` enabled gates are in-memory, which is fine for a single local process.
     let redis_sidecar_conn = match config.redis() {
         Some(redis) => Some(connect_to_redis(&redis.redis_sidecar_url).await?),
@@ -83,16 +88,16 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
         }
     };
 
-    let gates = config.alerting();
-    let cooldown_gate = match (gates.cooldown_gate, &redis_sidecar_conn) {
+    let gates = &config.alerting().cooldown_gate;
+    let local_gate = match (gates.local_gate, &redis_sidecar_conn) {
         (false, _) => None,
-        (true, Some(sidecar)) => Some(CooldownGate::new(
+        (true, Some(sidecar)) => Some(LocalGate::new(
             sidecar.clone(),
             cooldowns.clone(),
             &pod_id,
             opts.service_name,
         )),
-        (true, None) => Some(CooldownGate::in_memory(cooldowns.clone())),
+        (true, None) => Some(LocalGate::in_memory(cooldowns.clone())),
     };
     let fleet_gate = match (
         gates.fleet_gate,
@@ -109,6 +114,7 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
         }
     }
     .map(|g| g.with_default_ttl(Duration::from_secs(gates.fleet_gate_default_ttl_seconds)));
+    let cooldown_gate = CooldownGate::new(local_gate, fleet_gate);
 
     // Tracks the last seen slot and persists it to Redis for recovery across restarts.
     let slot_tracker = SlotTracker::try_init(
@@ -152,13 +158,8 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
     );
 
     // Start the alerting service and send alerts to the clickhouse and slack sinks
-    let alerting_service = AlertingService::new(
-        alerts_rx,
-        router,
-        cooldown_gate,
-        fleet_gate,
-        cancel_token.clone(),
-    );
+    let alerting_service =
+        AlertingService::new(alerts_rx, router, cooldown_gate, cancel_token.clone());
     alerting_service.start(&tracker);
 
     // Wait for shutdown signal (Ctrl+C) or cancellation token to be triggered
@@ -243,6 +244,29 @@ async fn connect_to_redis_cluster(redis_url: &str) -> anyhow::Result<ClusterConn
     Ok(client.get_async_connection().await?)
 }
 
+/// An RPC client that sends `rpc.identity` as `x-identity` when configured.
+/// Mirrors the 30s timeouts `RpcClient::new` would otherwise use.
+pub fn build_rpc_client(cfg: &RpcConfig) -> anyhow::Result<RpcClient> {
+    let mut headers: HeaderMap = HttpSender::default_headers();
+    if let Some(identity) = &cfg.identity {
+        headers.insert(
+            HeaderName::from_static("x-identity"),
+            HeaderValue::from_str(identity).context("rpc.identity is not a valid header value")?,
+        );
+    }
+
+    let timeout = Duration::from_secs(30);
+    let http = reqwest::Client::builder()
+        .default_headers(headers)
+        .timeout(timeout)
+        .pool_idle_timeout(timeout)
+        .build()
+        .context("failed to build rpc http client")?;
+
+    let sender = HttpSender::new_with_client(cfg.url.to_string(), http);
+    Ok(RpcClient::new_sender(sender, RpcClientConfig::default()))
+}
+
 fn extract_pod_id() -> anyhow::Result<String> {
     let id = hostname::get()
         .context("failed to read hostname")?
@@ -254,4 +278,45 @@ fn extract_pod_id() -> anyhow::Result<String> {
         "hostname is empty; cannot derive slot checkpoint key"
     );
     Ok(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn rpc_client_sends_x_identity_header() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Minimal HTTP server: capture the raw request, reply with a getSlot result.
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let n = sock.read(&mut buf).await.unwrap();
+            let body = r#"{"jsonrpc":"2.0","result":42,"id":1}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \
+                 {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            String::from_utf8_lossy(&buf[..n]).to_string()
+        });
+
+        let cfg = RpcConfig {
+            url: format!("http://{addr}/").parse().unwrap(),
+            identity: Some("sentinel-test".into()),
+        };
+        let slot = build_rpc_client(&cfg).unwrap().get_slot().await.unwrap();
+        assert_eq!(slot, 42);
+
+        let request = server.await.unwrap();
+        assert!(
+            request.to_lowercase().contains("x-identity: sentinel-test"),
+            "{request}"
+        );
+    }
 }

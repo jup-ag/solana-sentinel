@@ -1,15 +1,14 @@
 use crate::cooldown_gate::CooldownGate;
-use crate::fleet_gate::FleetGate;
 use crate::router::Router;
 use domain::alert::Alert;
 use domain::sinks::SinkId;
-use observability::prometheus::metrics::{record_alert, record_alert_suppressed};
+use observability::prometheus::metrics::record_alert;
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
-use tracing::{debug, error, info, warn};
+use tracing::{info, warn};
 
 const DEFAULT_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 const DEFAULT_BUFFER_CAPACITY: usize = 1024;
@@ -18,10 +17,8 @@ const SINK_DELIVERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct AlertingService {
     router: Router,
-    /// `None` disables that layer of dedup; see `should_send_alert`.
-    cooldown_gate: Option<CooldownGate>,
+    cooldown_gate: CooldownGate,
     alerts_rx: mpsc::Receiver<Alert>,
-    fleet_gate: Option<FleetGate>,
     cancel_token: CancellationToken,
     buffer_capacity: usize,
     flush_interval: Duration,
@@ -31,15 +28,13 @@ impl AlertingService {
     pub fn new(
         alerts_rx: mpsc::Receiver<Alert>,
         router: Router,
-        cooldown_gate: Option<CooldownGate>,
-        fleet_gate: Option<FleetGate>,
+        cooldown_gate: CooldownGate,
         cancel_token: CancellationToken,
     ) -> Self {
         Self {
             router,
             alerts_rx,
             cooldown_gate,
-            fleet_gate,
             cancel_token,
             buffer_capacity: DEFAULT_BUFFER_CAPACITY,
             flush_interval: DEFAULT_FLUSH_INTERVAL,
@@ -61,7 +56,6 @@ impl AlertingService {
             router,
             mut cooldown_gate,
             mut alerts_rx,
-            mut fleet_gate,
             cancel_token,
             buffer_capacity,
             flush_interval,
@@ -72,8 +66,8 @@ impl AlertingService {
                 sink_count = router.sink_count(),
                 flush_interval = ?flush_interval,
                 buffer_capacity,
-                cooldown_gate = cooldown_gate.is_some(),
-                fleet_gate = fleet_gate.is_some(),
+                local_gate = cooldown_gate.local_gate_enabled(),
+                fleet_gate = cooldown_gate.fleet_gate_enabled(),
                 "Starting alerting service",
             );
 
@@ -92,7 +86,7 @@ impl AlertingService {
                     maybe_alert = alerts_rx.recv() => {
                         match maybe_alert {
                             Some(alert) => {
-                                if !Self::should_send_alert(&alert, &mut cooldown_gate, &mut fleet_gate).await {
+                                if !cooldown_gate.should_send(&alert).await {
                                     continue;
                                 }
                                 record_alert(alert.severity);
@@ -118,7 +112,7 @@ impl AlertingService {
 
             // Drain remaining channel contents, then flush once with a hard cap.
             while let Ok(alert) = alerts_rx.try_recv() {
-                if !Self::should_send_alert(&alert, &mut cooldown_gate, &mut fleet_gate).await {
+                if !cooldown_gate.should_send(&alert).await {
                     continue;
                 }
                 record_alert(alert.severity);
@@ -197,40 +191,5 @@ impl AlertingService {
         });
 
         futures::future::join_all(futures).await;
-    }
-
-    /// Cooldown gate first (repeat of the same alert within its window), then
-    /// the fleet gate (already claimed by another node). A disabled gate passes.
-    async fn should_send_alert(
-        alert: &Alert,
-        cooldown_gate: &mut Option<CooldownGate>,
-        fleet_gate: &mut Option<FleetGate>,
-    ) -> bool {
-        if let Some(gate) = cooldown_gate {
-            match gate.check(alert).await {
-                Ok(true) => {}
-                Ok(false) => {
-                    debug!(rule = alert.rule.name, "Alert suppressed by cooldown");
-                    record_alert_suppressed(alert.rule.name);
-                    return false;
-                }
-                // fail-open: a Redis error must not lose alerts
-                Err(e) => error!("Failed to check cooldown gate: {e}"),
-            }
-        }
-
-        if let Some(gate) = fleet_gate {
-            match gate.check(alert).await {
-                Ok(true) => {}
-                Ok(false) => {
-                    debug!(rule = alert.rule.name, "Alert suppressed by fleet dedup");
-                    record_alert_suppressed(alert.rule.name);
-                    return false;
-                }
-                Err(e) => error!("Failed to check fleet gate: {e}"),
-            }
-        }
-
-        true
     }
 }

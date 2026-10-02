@@ -1,0 +1,12 @@
+# Reserves scope: slow poll checks on reserve balances. Lives in its own file so
+# the team owning reserves can change thresholds without touching treasury rules.
+
+[[rules]]
+program = "spl_token"
+name = "low_balance"
+sinks = ["stdout"]
+cooldown_period_seconds = 3600
+[rules.config]
+accounts = ["3emsAVdmGKERbHjmGfQ6oZ1e35dkf5iYcS6U4CPKFVaa"]
+min_amount = 1000000000
+poll_interval_seconds = 120

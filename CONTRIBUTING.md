@@ -3,7 +3,7 @@
 Solana Sentinel is a library; this repo holds only the framework crates under `crates/`.
 A *deployment* is a small Cargo workspace that depends on it: a binary calling
 `solana_sentinel_service::run(RunOptions { service_name, programs })`, its own *program*
-crates, and its `config.toml` / `rules.toml`.
+crates, and its `config.toml` plus a `rules.toml` or a `rules/` directory of them.
 
 A program is a crate exporting one `spec()` that lists its parsers and the *rules* registered on
 them. The core crate (`solana_sentinel`) does everything else: typed config validation,
@@ -29,8 +29,10 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-`my_monitor check` validates `rules.toml` + `config.toml` and prints the resolved
-subscriptions without connecting anywhere.
+`my_monitor check` validates the rules files + `config.toml` and prints the resolved
+subscriptions without connecting anywhere. `RULES_FILE` names one file or a directory;
+a directory's `*.toml` files are concatenated in name order, so a project or scope can
+own its rules in a file of its own. A rule name may appear in only one of them.
 
 `examples/spl-token-monitor/` is a complete, compiling deployment with a rule on every feed;
 `examples/README.md` walks through it.
@@ -40,7 +42,7 @@ subscriptions without connecting anywhere.
 Copy `config.example.toml` to your deployment as `config.toml`, point `[rpc]` and
 `[data_source]` at your endpoints, use the `stdout` sink, and leave `[redis]` and
 `[observability.betterstack]` out: gates become in-memory and no heartbeat is sent.
-To skip dedup altogether set `cooldown_gate = false` and `fleet_gate = false` under `[alerting]`.
+To skip dedup altogether set `local_gate = false` and `fleet_gate = false` under `[alerting.cooldown_gate]`.
 
 ## Add a rule
 
@@ -72,7 +74,7 @@ To skip dedup altogether set `cooldown_gate = false` and `fleet_gate = false` un
 2. Add `pub mod <rule>;` to `rules/mod.rs` and one `.register::<MyRule>()` line in `lib.rs::spec()`.
    Registering a `StreamRule` on `.poll(..)` or a `PollRule` on `.account(..)` is a compile error,
    as is a rule whose `Event` is not the parser's output.
-3. Add the `[[rules]]` entry to `rules.toml`.
+3. Add the `[[rules]]` entry to the rules file for its scope (or `rules.toml`).
 4. Add a fixture test with `solana_sentinel::testing` (`config_from_toml`, `account_update`,
    `ix_update`, `stream_ctx`, `assert_fires!`); enable the `testing` feature in dev-dependencies.
 

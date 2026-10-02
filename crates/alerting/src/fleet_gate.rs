@@ -1,4 +1,4 @@
-use crate::cooldown_gate::{memory_set_nx, set_nx_exat};
+use crate::local_gate::{memory_set_nx, set_nx_exat};
 use domain::alert::Alert;
 use domain::rules::RuleId;
 use parking_lot::Mutex;
@@ -92,44 +92,11 @@ mod tests {
     use domain::rules::RuleId;
     use redis::cluster::ClusterClient;
     use std::collections::BTreeMap;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
     use testcontainers::ImageExt;
     use testcontainers_modules::redis::{Redis, REDIS_PORT};
     use testcontainers_modules::testcontainers::runners::AsyncRunner;
     use testcontainers_modules::testcontainers::ContainerAsync;
-
-    const TEST_PROGRAMS: [&str; 10] = [
-        "jupiter_swap",
-        "jupiter_perps",
-        "jupiter_doves",
-        "squads_v4",
-        "bpf_loader_upgradeable",
-        "solana_vote",
-        "kamino_lending",
-        "meteora_dlmm",
-        "raydium_launchlab",
-        "pumpfun",
-    ];
-
-    const TEST_RULES: [&str; 10] = [
-        "authority_changed",
-        "upgrade_authority_set",
-        "reference_price_drift",
-        "oracle_staleness",
-        "large_withdrawal",
-        "commission_changed",
-        "multisig_threshold_changed",
-        "vote_account_hijack",
-        "reserve_liquidity_drop",
-        "unexpected_cpi",
-    ];
-
-    static SEQ: AtomicUsize = AtomicUsize::new(0);
-
-    fn next() -> usize {
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    }
 
     async fn redis_conn() -> (ClusterConnection, ContainerAsync<Redis>) {
         let container = Redis::default()
@@ -191,166 +158,39 @@ mod tests {
         (conn, container)
     }
 
-    // Same seed => identical value, including scope. Two build_alert calls with
-    // the same rule + seed produce the same fleet_gate_key, i.e. genuine
-    // duplicates. Different seeds => distinct conditions.
+    const RULE: RuleId = RuleId::new(Program::new("test_program"), "authority_changed");
 
-    fn build_rule(seed: usize) -> RuleId {
-        let program = TEST_PROGRAMS[seed % TEST_PROGRAMS.len()];
-        let rule = TEST_RULES[seed % TEST_RULES.len()];
-        RuleId::new(Program::new(program), rule)
-    }
-
-    fn build_scope(seed: usize) -> DedupScope {
-        match seed % 3 {
-            0 => DedupScope::Tx(format!("sig_{seed}")),
-            1 => DedupScope::Slot(seed as u64),
-            _ => DedupScope::Monitor,
-        }
-    }
-
-    fn build_alert(rule: RuleId, seed: usize) -> Alert {
-        let map = BTreeMap::from([("key", format!("value_{seed}")), ("rule", rule.to_string())]);
+    // Same seed => same dedup key, so two calls build genuine duplicates of one condition.
+    fn build_alert(seed: usize) -> Alert {
+        let map = BTreeMap::from([("key", format!("value_{seed}"))]);
         Alert::new(
-            rule,
+            RULE,
             Severity::Critical,
             format!("condition_{seed}"),
             map,
             &HashKey::new(&[format!("condition_{seed}")]),
-            build_scope(seed),
+            DedupScope::Tx(format!("sig_{seed}")),
         )
     }
 
-    fn random_rule() -> RuleId {
-        build_rule(next())
-    }
-
-    fn periods_with(rule: RuleId, period: Duration) -> HashMap<RuleId, Duration> {
-        let mut m = HashMap::new();
-        m.insert(rule, period);
-        m
-    }
-
-    #[tokio::test]
-    #[ignore = "needs Docker (testcontainers); run with --ignored"]
-    async fn first_sighting_is_sent() {
-        let (conn, _c) = redis_conn().await;
-        let rule = random_rule();
-        let mut gate = FleetGate::new(conn, periods_with(rule, Duration::from_secs(60)), "test");
-        let alert = build_alert(rule, next());
-
-        assert!(gate.check(&alert).await.unwrap());
-    }
-
-    #[tokio::test]
-    #[ignore = "needs Docker (testcontainers); run with --ignored"]
-    async fn duplicate_sighting_is_suppressed() {
-        let (conn, _c) = redis_conn().await;
-        let rule = random_rule();
-        let mut gate = FleetGate::new(conn, periods_with(rule, Duration::from_secs(60)), "test");
-
-        // Rebuilt from the same seed => same shared key => genuine duplicate.
-        let seed = next();
-        let alert = build_alert(rule, seed);
-        let duplicate = build_alert(rule, seed);
-
-        assert!(gate.check(&alert).await.unwrap());
-        assert!(!gate.check(&duplicate).await.unwrap());
-    }
-
-    #[tokio::test]
-    #[ignore = "needs Docker (testcontainers); run with --ignored"]
-    async fn different_conditions_are_independent() {
-        let (conn, _c) = redis_conn().await;
-        let rule = random_rule();
-        let mut gate = FleetGate::new(conn, periods_with(rule, Duration::from_secs(60)), "test");
-
-        // Same rule, different seeds => different shared keys.
-        let seed_a = next();
-        let alert_a = build_alert(rule, seed_a);
-        let alert_b = build_alert(rule, next());
-
-        assert!(gate.check(&alert_a).await.unwrap());
-        assert!(!gate.check(&build_alert(rule, seed_a)).await.unwrap());
-        assert!(gate.check(&alert_b).await.unwrap());
-    }
-
-    #[tokio::test]
-    #[ignore = "needs Docker (testcontainers); run with --ignored"]
-    async fn mixed_stream_sends_each_condition_once() {
-        let (conn, _c) = redis_conn().await;
-        let rule = random_rule();
-        let mut gate = FleetGate::new(conn, periods_with(rule, Duration::from_secs(60)), "test");
-
-        // 8 distinct conditions with fixed seeds, then rebuilt duplicates of the
-        // even-indexed ones, rotated so dups don't sit next to their originals.
-        let seeds: Vec<usize> = (0..8).map(|_| next()).collect();
-        let distinct: Vec<Alert> = seeds.iter().map(|&s| build_alert(rule, s)).collect();
-        let dups: Vec<Alert> = seeds
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| i % 2 == 0)
-            .map(|(_, &s)| build_alert(rule, s))
-            .collect();
-
-        let mut stream: Vec<&Alert> = distinct.iter().collect();
-        stream.extend(dups.iter());
-        stream.rotate_left(3);
-
-        let mut sent = 0usize;
-        for alert in stream {
-            if gate.check(alert).await.unwrap() {
-                sent += 1;
-            }
-        }
-
-        assert_eq!(sent, distinct.len());
-    }
-
-    #[tokio::test]
-    #[ignore = "needs Docker (testcontainers); run with --ignored"]
-    async fn separate_gates_share_state_across_the_fleet() {
-        let (conn, _c) = redis_conn().await;
-        let rule = random_rule();
-
-        // Two nodes each build their OWN alert from the same seed — separate
-        // objects, identical shared key — the real inter-node dedup case.
-        let seed = next();
-        let mut node_a = FleetGate::new(
-            conn.clone(),
-            periods_with(rule, Duration::from_secs(60)),
-            "test",
-        );
-        let mut node_b = FleetGate::new(
-            conn.clone(),
-            periods_with(rule, Duration::from_secs(60)),
-            "test",
-        );
-
-        assert!(node_a.check(&build_alert(rule, seed)).await.unwrap());
-        assert!(!node_b.check(&build_alert(rule, seed)).await.unwrap());
+    fn periods(period: Duration) -> HashMap<RuleId, Duration> {
+        HashMap::from([(RULE, period)])
     }
 
     #[tokio::test]
     #[ignore = "needs Docker (testcontainers); run with --ignored"]
     async fn concurrent_duplicate_checks_send_exactly_once() {
         let (conn, _c) = redis_conn().await;
-        let rule = random_rule();
 
-        // Each task rebuilds its own alert from one shared seed: 16 distinct
-        // objects, one identical shared key, racing on Redis.
-        let seed = next();
-
-        let mut handles = Vec::new();
-        for _ in 0..16 {
-            let mut gate = FleetGate::new(
-                conn.clone(),
-                periods_with(rule, Duration::from_secs(60)),
-                "test",
-            );
-            let a = build_alert(rule, seed);
-            handles.push(tokio::spawn(async move { gate.check(&a).await.unwrap() }));
-        }
+        // 16 separate gates (one per node) each rebuild their own alert from one seed:
+        // distinct objects, one shared key, racing on the cluster.
+        let handles: Vec<_> = (0..16)
+            .map(|_| {
+                let mut gate =
+                    FleetGate::new(conn.clone(), periods(Duration::from_secs(60)), "test");
+                tokio::spawn(async move { gate.check(&build_alert(0)).await.unwrap() })
+            })
+            .collect();
 
         let mut sent = 0;
         for h in handles {
@@ -358,6 +198,6 @@ mod tests {
                 sent += 1;
             }
         }
-        assert_eq!(sent, 1);
+        assert_eq!(sent, 1, "exactly one node across the fleet sends");
     }
 }

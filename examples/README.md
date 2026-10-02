@@ -12,14 +12,15 @@ on each of the three feeds, the binary that runs it, and its config.
 | `src/rules/large_transfer.rs` | Instruction rule (`StreamRule`): transfers out of watched accounts above a threshold, per-transaction dedup. |
 | `src/rules/balance_drop.rs` | Account rule (`StreamRule`) with a `StateCache` seeded from RPC in `bootstrap`. |
 | `src/rules/low_balance.rs` | Poll rule (`PollRule`): its own account set and cadence, monitor-scoped dedup. |
-| `rules.toml` | Activates the rules, routes them to sinks, and carries each rule's typed config. |
+| `rules/treasury.toml` | Activates the two stream rules, routes them to sinks, and carries their typed config. |
+| `rules/reserves.toml` | The poll rule in its own file: one file per scope, concatenated at startup. |
 | `config.toml` | Data source, RPC, observability and a stdout sink; nothing else is required locally. |
 
 Validate without connecting anywhere:
 
 ```sh
 CONFIG_FILE=examples/spl-token-monitor/config.toml \
-RULES_FILE=examples/spl-token-monitor/rules.toml \
+RULES_FILE=examples/spl-token-monitor/rules \
 cargo run -p spl-token-monitor-example -- check
 ```
 
@@ -39,7 +40,8 @@ cargo test -p spl-token-monitor-example
    (or `accounts` for a poll rule) and `evaluate`.
 2. Add `pub mod <rule>;` to `src/rules/mod.rs` and `.register::<Rule>()` on the matching
    feed in `spec()`. Registering a stream rule on `.poll(..)` is a compile error.
-3. Add a `[[rules]]` block to `rules.toml`. `check` reports config errors by rule and field.
+3. Add a `[[rules]]` block to the matching `rules/*.toml`, or a new file for a new scope.
+   `check` reports config errors by rule and field.
 
 ### Adding a program
 

@@ -1,6 +1,6 @@
 //! Step 2 of startup: resolve every configured program against the registry
 //! and type-check its rule configs. No network connection is open yet, so a
-//! typo in `rules.toml` fails here with the program, rule and field named.
+//! typo in a rules file fails here with the program, rule and field named.
 
 use crate::config::{ProgramRules, SentinelConfig};
 use crate::wiring::WiringError;

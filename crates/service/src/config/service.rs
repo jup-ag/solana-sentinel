@@ -14,18 +14,24 @@ pub struct ServiceConfig {
     pub observability: ObservabilityConfig,
     /// Optional: without it, enabled gates are in-memory and slot checkpoints are not persisted.
     pub redis: Option<RedisConfig>,
-    /// Optional: which alert dedup gates run. Both default to on.
+    /// Optional: cooldown gate layers. Both default to on.
     #[serde(default)]
     pub alerting: AlertingConfig,
 }
 
-/// Alert dedup gates. A disabled gate is never consulted; an enabled one uses
-/// Redis from `[redis]` when configured and process memory otherwise.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct AlertingConfig {
+    #[serde(default)]
+    pub cooldown_gate: CooldownGateConfig,
+}
+
+/// Cooldown gate: the two alert dedup layers. A disabled layer is never consulted;
+/// an enabled one uses Redis from `[redis]` when configured and process memory otherwise.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CooldownGateConfig {
     /// Per-node: suppress a repeat of the same alert within its rule's `cooldown_period_seconds`.
     #[serde(default = "defaults::gate_enabled")]
-    pub cooldown_gate: bool,
+    pub local_gate: bool,
     /// Fleet-wide: suppress an alert another node already claimed.
     #[serde(default = "defaults::gate_enabled")]
     pub fleet_gate: bool,
@@ -34,10 +40,10 @@ pub struct AlertingConfig {
     pub fleet_gate_default_ttl_seconds: u64,
 }
 
-impl Default for AlertingConfig {
+impl Default for CooldownGateConfig {
     fn default() -> Self {
         Self {
-            cooldown_gate: defaults::gate_enabled(),
+            local_gate: defaults::gate_enabled(),
             fleet_gate: defaults::gate_enabled(),
             fleet_gate_default_ttl_seconds: defaults::fleet_gate_default_ttl_seconds(),
         }
@@ -108,6 +114,8 @@ pub struct KafkaSourceConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct RpcConfig {
     pub url: Url,
+    /// Optional `x-identity` header on every RPC request, so a shared provider can attribute traffic.
+    pub identity: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -190,7 +198,7 @@ pub struct BetterstackHeartbeatConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RedisConfig {
-    /// Per-pod sidecar Redis (slot checkpoint, cooldown gate).
+    /// Per-pod sidecar Redis (slot checkpoint, local gate).
     pub redis_sidecar_url: String,
     /// Fleet-wide shared Redis cluster for the fleet gate. Optional: without it
     /// the fleet gate runs in-memory, i.e. dedups within this process only.

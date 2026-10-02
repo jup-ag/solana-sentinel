@@ -1,7 +1,9 @@
-# Which rules run, with what config, and where their alerts go. `program` and
-# `name` must match a `RuleId` registered in that program's `spec()`; `sinks`
-# are ids from `[[sinks]]` in config.toml. The `config` table is the rule's
-# typed `Config` and is validated before anything connects.
+# Treasury scope: rules watching the USDC treasury-style token accounts. One
+# file per scope under rules/; every file holds `[[rules]]` blocks and the
+# service concatenates them in name order. `program` and `name` must match a
+# `RuleId` registered in that program's `spec()`; `sinks` are ids from
+# `[[sinks]]` in config.toml. The `config` table is the rule's typed `Config`
+# and is validated before anything connects.
 
 [[rules]]
 program = "spl_token"
@@ -22,13 +24,3 @@ cooldown_period_seconds = 300
 [rules.config]
 accounts = ["3emsAVdmGKERbHjmGfQ6oZ1e35dkf5iYcS6U4CPKFVaa"]
 drop_bps = 2000
-
-[[rules]]
-program = "spl_token"
-name = "low_balance"
-sinks = ["stdout"]
-cooldown_period_seconds = 3600
-[rules.config]
-accounts = ["3emsAVdmGKERbHjmGfQ6oZ1e35dkf5iYcS6U4CPKFVaa"]
-min_amount = 1000000000
-poll_interval_seconds = 120
