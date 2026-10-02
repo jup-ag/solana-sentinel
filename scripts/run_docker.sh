@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
-# Manages the clickhouse, prometheus, and grafana services from the devcontainer
-# compose stack. The 'app' service is left untouched (you presumably run cargo on
-# the host).
-#
-# redis is currently DISABLED. To re-enable: uncomment it in SERVICES and its
-# entry in VOLUMES below. Nothing else needs to change.
+# Manages the clickhouse, prometheus, grafana, and redis services from the
+# devcontainer compose stack. The 'app' service is left untouched (you
+# presumably run cargo on the host).
 set -euo pipefail
 
 SCRIPT_DIR=".devcontainer"

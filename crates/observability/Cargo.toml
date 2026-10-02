@@ -6,7 +6,6 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
-domain = { workspace = true }
 
 solana-rpc-client = { workspace = true }
 shipstern = { workspace = true }
@@ -20,9 +19,7 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 prometheus = { workspace = true }
 reqwest = { workspace = true }
-serde = { workspace = true }
 url = { workspace = true }
-futures = { workspace = true }
 redis = { workspace = true }
 
 [lints]

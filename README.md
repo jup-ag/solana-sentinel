@@ -23,7 +23,7 @@ RPC getMultipleAccounts ──────────────────�
 - **`Router`** — `HashMap<RuleId, Vec<SinkId>>` fan-out from rules to sinks.
 - **`AlertingService`** — dedups (cooldown + fleet gates, each optional via `[alerting]`), batches and forwards alerts to sinks.
 
-See `CONTRIBUTING.md` for adding a rule or a program, and `docs/rfc-adapters-and-wiring.md`
+See `CONTRIBUTING.md` for adding a rule or a program, and `docs/arch.md`
 for the design.
 
 ## Using it

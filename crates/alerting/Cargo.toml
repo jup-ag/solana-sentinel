@@ -9,7 +9,6 @@ version.workspace = true
 observability = { workspace = true }
 domain = { workspace = true }
 
-solana-pubkey = { workspace = true }
 
 tokio = { workspace = true }
 async-trait = { workspace = true }

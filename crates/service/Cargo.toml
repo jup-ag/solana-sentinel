@@ -17,7 +17,6 @@ anyhow = { workspace = true }
 config = { workspace = true }
 
 serde = { workspace = true }
-solana-pubkey = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 url = { workspace = true }

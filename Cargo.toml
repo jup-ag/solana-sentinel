@@ -25,7 +25,6 @@ observability = { path = "crates/observability", package = "solana-sentinel-obse
 alerting = { path = "crates/alerting", package = "solana-sentinel-alerting" }
 data-source = { path = "crates/data-source", package = "solana-sentinel-data-source" }
 solana-sentinel-service = { path = "crates/service" }
-solana-sentinel-migration = { path = "crates/migration" }
 
 
 # Solana
@@ -33,18 +32,12 @@ solana-pubkey = "3.0.0"
 solana-rpc-client = "3.0.0"
 solana-program-pack = "3.1.0"
 spl-token-interface = "3.0.0"
-spl-token-2022-interface = "3.0.1"
 solana-account-decoder-client-types = "3.0.0"
-solana-sdk-ids = "3.0.0"
-solana-system-interface = { version = "3.0.0", features = ["wincode"] }
 solana-account = "3.0.0"
-solana-loader-v3-interface = { version = "8.0.1", features = ["wincode"] }
 
 ## Shipstern (formerly Yellowstone Vixen)
 shipstern = "0.9.0"
 shipstern-core = "0.9.0"
-shipstern-parser = "0.9.0"
-shipstern-proc-macro = "0.9.0"
 shipstern-spl-token-parser = "0.9.0"
 shipstern-slot-parser = "0.9.0"
 shipstern-yellowstone-grpc-source = "0.9.0"
@@ -63,9 +56,6 @@ tracing = "0.1.44"
 
 # serialization
 serde = { version = "1.0", features = ["derive"] }
-borsh = { version = "1.6.1", features = ["derive"] }
-wincode = "0.5.5"
-bytemuck = "1.25.0"
 serde_json = "1.0.150"
 
 # async, db, metrics ..
@@ -84,7 +74,6 @@ url = { version = "2.5.4", features = ["serde"] }
 chrono = { version = "0.4.44", features = ["serde"] }
 thiserror = "2.0.18"
 uuid = { version = "1.23.1", features = ["serde", "v4"] }
-strum = { version = "0.28", features = ["derive"] }
 clickhouse = { version = "0.15.0", features = [
     "chrono",
     "uuid",
