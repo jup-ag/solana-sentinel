@@ -12,8 +12,36 @@ pub struct ServiceConfig {
     pub rpc: RpcConfig,
     pub sinks: Vec<SinkConfig>,
     pub observability: ObservabilityConfig,
-    /// Optional: without it, cooldown / fleet gates are in-memory and slot checkpoints are not persisted.
+    /// Optional: without it, enabled gates are in-memory and slot checkpoints are not persisted.
     pub redis: Option<RedisConfig>,
+    /// Optional: which alert dedup gates run. Both default to on.
+    #[serde(default)]
+    pub alerting: AlertingConfig,
+}
+
+/// Alert dedup gates. A disabled gate is never consulted; an enabled one uses
+/// Redis from `[redis]` when configured and process memory otherwise.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AlertingConfig {
+    /// Per-node: suppress a repeat of the same alert within its rule's `cooldown_period_seconds`.
+    #[serde(default = "defaults::gate_enabled")]
+    pub cooldown_gate: bool,
+    /// Fleet-wide: suppress an alert another node already claimed.
+    #[serde(default = "defaults::gate_enabled")]
+    pub fleet_gate: bool,
+    /// Fleet gate claim TTL for rules without `cooldown_period_seconds`.
+    #[serde(default = "defaults::fleet_gate_default_ttl_seconds")]
+    pub fleet_gate_default_ttl_seconds: u64,
+}
+
+impl Default for AlertingConfig {
+    fn default() -> Self {
+        Self {
+            cooldown_gate: defaults::gate_enabled(),
+            fleet_gate: defaults::gate_enabled(),
+            fleet_gate_default_ttl_seconds: defaults::fleet_gate_default_ttl_seconds(),
+        }
+    }
 }
 
 /// Where the stream comes from. Every variant is a shipstern source running in its
@@ -162,10 +190,11 @@ pub struct BetterstackHeartbeatConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RedisConfig {
-    /// Per-pod sidecar Redis (slot_checkpoint, cooldown_gate, etc.)
+    /// Per-pod sidecar Redis (slot checkpoint, cooldown gate).
     pub redis_sidecar_url: String,
-    /// Fleet-wide shared Redis (alert deduplication, alert suppression)
-    pub redis_fleet_url: String,
+    /// Fleet-wide shared Redis cluster for the fleet gate. Optional: without it
+    /// the fleet gate runs in-memory, i.e. dedups within this process only.
+    pub redis_fleet_url: Option<String>,
 }
 
 impl ServiceConfig {
@@ -213,5 +242,12 @@ mod defaults {
 
     pub fn kafka_auto_offset_reset() -> String {
         "latest".into()
+    }
+
+    pub fn gate_enabled() -> bool {
+        true
+    }
+    pub fn fleet_gate_default_ttl_seconds() -> u64 {
+        10 * 60
     }
 }

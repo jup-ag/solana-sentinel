@@ -1,17 +1,17 @@
-//! What a program crate exports: a [`ProgramSpec`] built from a parser per
-//! feed and the rules registered on it. The service drives it through
-//! validate → bootstrap → install; the deps type is erased so every program
-//! fits one registry entry, and the typed builder keeps rule/deps mismatches
-//! a compile error.
+//! What a program crate exports: a [`ProgramSpec`] listing a parser per feed
+//! and the rules registered on it. The service drives it through
+//! `validate` (typed config, no I/O) and `start` (bootstrap deps and rules,
+//! build pipelines, spawn loops). Pipelines are type-erased behind two small
+//! traits so every program fits one registry entry.
 
-use crate::deps::ProgramDeps;
+use crate::deps::{Deps, ProgramDeps};
 use crate::handler::RuleHandler;
 use crate::parser::{
-    scoped_parser_id, FrameworkParser, PipelineKind, PipelineSink, StreamInput, TxGate,
+    scoped_parser_id, FrameworkParser, PipelineKind, StreamInput, StreamPipeline, TxGate,
 };
 use crate::poll::{spawn_poll_loop, PollSource};
-use crate::rule::{BuiltStreamRule, RuleConfigError};
-use crate::rule_set::{PollBucket, PollRules, StreamRules, ValidatedPoll, ValidatedStream};
+use crate::rule::RuleConfigError;
+use crate::rule_set::{PollRules, StreamRules, ValidatedPoll, ValidatedStream};
 use crate::subscription::Subscription;
 use crate::sweep::spawn_sweep_loops;
 use crate::{BootstrapCtx, RawRuleMap};
@@ -19,13 +19,13 @@ use async_trait::async_trait;
 use domain::alert::Alert;
 use domain::programs::Program;
 use domain::rules::RuleId;
+use futures::future::BoxFuture;
+use shipstern::filter_pipeline::FilterPipeline;
+use shipstern::handler::BoxPipeline;
 use shipstern_core::Parser;
 use solana_pubkey::Pubkey;
-use solana_rpc_client::nonblocking::rpc_client::RpcClient;
-use std::any::Any;
 use std::collections::HashSet;
 use std::fmt::{self, Debug, Display};
-use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -33,97 +33,62 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{info, warn};
 
-// ---- deps erasure -----------------------------------------------------------
-
-#[async_trait]
-pub(crate) trait DynDeps: Send + Sync {
-    fn as_any(&self) -> &(dyn Any + Send + Sync);
-    fn dynamic_subscription(&self) -> Subscription;
-    fn refresh_interval(&self) -> Option<Duration>;
-    async fn refresh(&self, ctx: &BootstrapCtx) -> anyhow::Result<()>;
+/// Everything `start` needs besides the program itself.
+pub struct StartCtx<'a> {
+    pub bootstrap: BootstrapCtx,
+    pub alerts_tx: mpsc::Sender<Alert>,
+    pub cancel_token: CancellationToken,
+    pub tracker: &'a TaskTracker,
 }
 
-struct DepsCell<D>(D);
+/// `Deps::bootstrap` behind a function pointer so the spec stays non-generic.
+type DepsBootstrap =
+    for<'a> fn(&'a BootstrapCtx) -> BoxFuture<'a, anyhow::Result<Arc<dyn ProgramDeps>>>;
 
-#[async_trait]
-impl<D: ProgramDeps> DynDeps for DepsCell<D> {
-    fn as_any(&self) -> &(dyn Any + Send + Sync) {
-        &self.0
-    }
-
-    fn dynamic_subscription(&self) -> Subscription {
-        self.0.dynamic_subscription()
-    }
-
-    fn refresh_interval(&self) -> Option<Duration> {
-        self.0.refresh_interval()
-    }
-
-    async fn refresh(&self, ctx: &BootstrapCtx) -> anyhow::Result<()> {
-        self.0.refresh(ctx).await
-    }
+fn bootstrap_deps<D: ProgramDeps>(
+    ctx: &BootstrapCtx,
+) -> BoxFuture<'_, anyhow::Result<Arc<dyn ProgramDeps>>> {
+    Box::pin(async move { Ok(Arc::new(D::bootstrap(ctx).await?) as Arc<dyn ProgramDeps>) })
 }
 
-#[async_trait]
-trait DepsFactory: Send + Sync {
-    async fn bootstrap(&self, ctx: &BootstrapCtx) -> anyhow::Result<Arc<dyn DynDeps>>;
-}
+// ---- pipelines --------------------------------------------------------------
 
-struct Factory<D>(PhantomData<fn() -> D>);
-
-#[async_trait]
-impl<D: ProgramDeps> DepsFactory for Factory<D> {
-    async fn bootstrap(&self, ctx: &BootstrapCtx) -> anyhow::Result<Arc<dyn DynDeps>> {
-        Ok(Arc::new(DepsCell(D::bootstrap(ctx).await?)))
-    }
-}
-
-// ---- pipeline erasure -------------------------------------------------------
-
-trait PipelineSpec: Send + Sync {
+trait Pipeline: Send + Sync {
     fn rule_ids(&self) -> Vec<RuleId>;
+    /// `None` when none of the pipeline's rules are configured.
     fn validate(
         &self,
         program: Program,
         raw: &RawRuleMap,
-    ) -> Result<Box<dyn ValidatedPipeline>, RuleConfigError>;
+    ) -> Result<Option<Box<dyn ValidatedPipeline>>, RuleConfigError>;
 }
 
 #[async_trait]
 trait ValidatedPipeline: Send {
-    fn is_empty(&self) -> bool;
     fn rule_ids(&self) -> Vec<RuleId>;
     fn report(&self) -> PipelineReport;
-    async fn build(
+    /// Build + bootstrap the rules, then hand back stream pipelines or spawn poll loops.
+    async fn start(
         self: Box<Self>,
-        deps: &dyn DynDeps,
-        ctx: &BootstrapCtx,
-    ) -> Result<Box<dyn BuiltPipeline>, RuleConfigError>;
+        program: Program,
+        deps: &Deps,
+        ctx: &StartCtx<'_>,
+        out: &mut StartedProgram,
+    ) -> Result<(), RuleConfigError>;
 }
 
-trait BuiltPipeline: Send {
-    fn install(self: Box<Self>, target: &mut InstallTarget<'_>);
-}
-
-fn typed_deps<D: ProgramDeps>(deps: &dyn DynDeps) -> &D {
-    deps.as_any()
-        .downcast_ref::<D>()
-        .expect("program deps type mismatch; ProgramBuilder ties rules to their deps type")
-}
-
-// stream
-
-struct StreamSpec<P: Parser, D> {
+struct StreamSpec<P: Parser> {
     parser: P,
-    rules: StreamRules<P::Output, D>,
+    rules: StreamRules<P::Output>,
+    /// `StreamPipeline::Account` and friends; picks the builder slot for `P::Input`.
+    wrap: fn(BoxPipeline<'static, P::Input>) -> StreamPipeline,
 }
 
-impl<P, D> PipelineSpec for StreamSpec<P, D>
+impl<P> Pipeline for StreamSpec<P>
 where
     P: Parser + Clone + Debug + Send + Sync + 'static,
     P::Input: StreamInput,
     P::Output: Send + Sync + 'static,
-    D: ProgramDeps,
 {
     fn rule_ids(&self) -> Vec<RuleId> {
         self.rules.ids()
@@ -133,31 +98,32 @@ where
         &self,
         program: Program,
         raw: &RawRuleMap,
-    ) -> Result<Box<dyn ValidatedPipeline>, RuleConfigError> {
-        Ok(Box::new(StreamValidated {
+    ) -> Result<Option<Box<dyn ValidatedPipeline>>, RuleConfigError> {
+        let rules = self.rules.validate(program, raw)?;
+        if rules.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Box::new(StreamValidated {
             parser: self.parser.clone(),
-            rules: self.rules.validate(program, raw)?,
-        }))
+            rules,
+            wrap: self.wrap,
+        })))
     }
 }
 
-struct StreamValidated<P: Parser, D> {
+struct StreamValidated<P: Parser> {
     parser: P,
-    rules: ValidatedStream<P::Output, D>,
+    rules: ValidatedStream<P::Output>,
+    wrap: fn(BoxPipeline<'static, P::Input>) -> StreamPipeline,
 }
 
 #[async_trait]
-impl<P, D> ValidatedPipeline for StreamValidated<P, D>
+impl<P> ValidatedPipeline for StreamValidated<P>
 where
     P: Parser + Clone + Debug + Send + Sync + 'static,
     P::Input: StreamInput,
     P::Output: Send + Sync + 'static,
-    D: ProgramDeps,
 {
-    fn is_empty(&self) -> bool {
-        self.rules.is_empty()
-    }
-
     fn rule_ids(&self) -> Vec<RuleId> {
         self.rules.ids()
     }
@@ -175,107 +141,74 @@ where
         }
     }
 
-    async fn build(
+    async fn start(
         self: Box<Self>,
-        deps: &dyn DynDeps,
-        ctx: &BootstrapCtx,
-    ) -> Result<Box<dyn BuiltPipeline>, RuleConfigError> {
+        program: Program,
+        deps: &Deps,
+        ctx: &StartCtx<'_>,
+        out: &mut StartedProgram,
+    ) -> Result<(), RuleConfigError> {
+        let kind = P::Input::KIND;
+        let base_id = self.parser.id().into_owned();
         let static_subscription = self.rules.static_subscription();
-        let rules = self.rules.build(typed_deps::<D>(deps), ctx).await?;
-        Ok(Box::new(StreamBuilt {
-            parser: self.parser,
-            static_subscription,
-            rules,
-        }))
-    }
-}
+        let rules = self.rules.build(deps, &ctx.bootstrap).await?;
+        let rule_names: Vec<_> = rules.iter().map(|r| r.id.name).collect();
 
-struct StreamBuilt<P: Parser> {
-    parser: P,
-    static_subscription: Subscription,
-    rules: Vec<BuiltStreamRule<P::Output>>,
-}
-
-impl<P> BuiltPipeline for StreamBuilt<P>
-where
-    P: Parser + Clone + Debug + Send + Sync + 'static,
-    P::Input: StreamInput,
-    P::Output: Send + Sync + 'static,
-{
-    fn install(self: Box<Self>, target: &mut InstallTarget<'_>) {
-        let Self {
-            parser,
-            static_subscription,
-            rules: built,
-        } = *self;
-        let rules: Vec<_> = built.iter().map(|b| Arc::clone(&b.rule)).collect();
-        let program = target.program;
-        let base_id = parser.id().into_owned();
         let subscription = static_subscription
             .clone()
-            .union(target.dynamic_subscription.clone());
-        let subs = <P::Input as StreamInput>::prefilters(&subscription);
-
+            .union(out.deps.dynamic_subscription());
+        let subs = kind.prefilters(&subscription);
         if subs.is_empty() {
             warn!(
                 program = %program,
                 parser = %base_id,
-                rules = ?rules.iter().map(|r| r.id().name).collect::<Vec<_>>(),
+                rules = ?rule_names,
                 "Pipeline resolved to an empty subscription; its rules will never fire"
             );
-            return;
+            return Ok(());
         }
 
-        let handler = RuleHandler::new(rules.clone(), target.alerts_tx.clone());
-        let gate = <P::Input as StreamInput>::needs_gate()
-            .then(|| TxGate::from_subscription(&subscription));
+        let handler = RuleHandler::new(rules.clone(), ctx.alerts_tx.clone());
+        let gate =
+            (kind == PipelineKind::Instruction).then(|| TxGate::from_subscription(&subscription));
         let subscriptions = subs.len();
-
         for (i, sub) in subs.into_iter().enumerate() {
-            let scoped = FrameworkParser::new(
-                parser.clone(),
+            let parser = FrameworkParser::new(
+                self.parser.clone(),
                 scoped_parser_id(program, &base_id, i),
                 gate.clone(),
             );
-            <P::Input as StreamInput>::add_pipeline(target.sink, scoped, handler.clone(), sub);
+            let pipeline = FilterPipeline::new(parser, [handler.clone()], sub);
+            out.pipelines.push((self.wrap)(Box::new(pipeline)));
         }
-        target.grpc_pipelines += subscriptions;
-
         info!(
             program = %program,
-            kind = P::Input::KIND.as_str(),
+            kind = kind.as_str(),
             parser = %base_id,
             subscriptions,
-            rules = ?rules.iter().map(|r| r.id().name).collect::<Vec<_>>(),
-            "Pipeline installed"
+            rules = ?rule_names,
+            "Pipeline built"
         );
 
-        spawn_sweep_loops(
-            &built,
-            &target.alerts_tx,
-            &target.cancel_token,
-            target.tracker,
-        );
-
-        target.installed.push(InstalledStream {
-            kind: P::Input::KIND,
+        spawn_sweep_loops(&rules, &ctx.alerts_tx, &ctx.cancel_token, ctx.tracker);
+        out.streams.push(InstalledStream {
+            kind,
             base_id,
-            parser_prefilter: parser.prefilter(),
+            parser_prefilter: self.parser.prefilter(),
             static_subscription,
             subscriptions,
         });
+        Ok(())
     }
 }
 
-// poll
-
-struct PollSpec<S: PollSource, D> {
+struct PollSpec<S: PollSource> {
     source: Arc<S>,
     default_interval: Duration,
-    rules: PollRules<S::Item, D>,
+    rules: PollRules<S::Item>,
 }
 
-impl<S: PollSource, D: ProgramDeps> PipelineSpec for PollSpec<S, D> {
+impl<S: PollSource> Pipeline for PollSpec<S> {
     fn rule_ids(&self) -> Vec<RuleId> {
         self.rules.ids()
     }
@@ -284,27 +217,27 @@ impl<S: PollSource, D: ProgramDeps> PipelineSpec for PollSpec<S, D> {
         &self,
         program: Program,
         raw: &RawRuleMap,
-    ) -> Result<Box<dyn ValidatedPipeline>, RuleConfigError> {
-        Ok(Box::new(PollValidated {
+    ) -> Result<Option<Box<dyn ValidatedPipeline>>, RuleConfigError> {
+        let rules = self.rules.validate(program, raw)?;
+        if rules.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Box::new(PollValidated {
             source: Arc::clone(&self.source),
             default_interval: self.default_interval,
-            rules: self.rules.validate(program, raw)?,
-        }))
+            rules,
+        })))
     }
 }
 
-struct PollValidated<S: PollSource, D> {
+struct PollValidated<S: PollSource> {
     source: Arc<S>,
     default_interval: Duration,
-    rules: ValidatedPoll<S::Item, D>,
+    rules: ValidatedPoll<S::Item>,
 }
 
 #[async_trait]
-impl<S: PollSource, D: ProgramDeps> ValidatedPipeline for PollValidated<S, D> {
-    fn is_empty(&self) -> bool {
-        self.rules.is_empty()
-    }
-
+impl<S: PollSource> ValidatedPipeline for PollValidated<S> {
     fn rule_ids(&self) -> Vec<RuleId> {
         self.rules.ids()
     }
@@ -332,70 +265,134 @@ impl<S: PollSource, D: ProgramDeps> ValidatedPipeline for PollValidated<S, D> {
         }
     }
 
-    async fn build(
+    async fn start(
         self: Box<Self>,
-        deps: &dyn DynDeps,
-        ctx: &BootstrapCtx,
-    ) -> Result<Box<dyn BuiltPipeline>, RuleConfigError> {
+        program: Program,
+        deps: &Deps,
+        ctx: &StartCtx<'_>,
+        _out: &mut StartedProgram,
+    ) -> Result<(), RuleConfigError> {
         let buckets = self
             .rules
-            .build(self.default_interval, typed_deps::<D>(deps), ctx)
+            .build(self.default_interval, deps, &ctx.bootstrap)
             .await?;
-        Ok(Box::new(PollBuilt {
-            source: self.source,
-            buckets,
-        }))
-    }
-}
-
-struct PollBuilt<S: PollSource> {
-    source: Arc<S>,
-    buckets: Vec<PollBucket<S::Item>>,
-}
-
-impl<S: PollSource> BuiltPipeline for PollBuilt<S> {
-    fn install(self: Box<Self>, target: &mut InstallTarget<'_>) {
-        for bucket in self.buckets {
+        for bucket in buckets {
             spawn_poll_loop(
-                target.program,
+                program,
                 Arc::clone(&self.source),
                 bucket,
-                Arc::clone(&target.rpc),
-                target.alerts_tx.clone(),
-                target.cancel_token.clone(),
-                target.tracker,
+                Arc::clone(&ctx.bootstrap.rpc),
+                ctx.alerts_tx.clone(),
+                ctx.cancel_token.clone(),
+                ctx.tracker,
             );
         }
+        Ok(())
     }
 }
 
 // ---- public surface ---------------------------------------------------------
 
-/// One monitored program: its shared deps and the pipelines that feed its rules.
+/// One monitored program: optional shared deps and the pipelines that feed its rules.
 pub struct ProgramSpec {
     program: Program,
-    deps: Arc<dyn DepsFactory>,
-    pipelines: Vec<Box<dyn PipelineSpec>>,
-}
-
-/// Typed builder; `D` is the program's [`ProgramDeps`] and every registered rule must use it.
-pub struct ProgramBuilder<D> {
-    program: Program,
-    pipelines: Vec<Box<dyn PipelineSpec>>,
-    _deps: PhantomData<fn() -> D>,
+    deps: DepsBootstrap,
+    pipelines: Vec<Box<dyn Pipeline>>,
 }
 
 impl ProgramSpec {
-    pub fn builder(program: Program) -> ProgramBuilder<()> {
-        ProgramBuilder {
+    pub fn new(program: Program) -> Self {
+        Self {
             program,
+            deps: bootstrap_deps::<()>,
             pipelines: Vec::new(),
-            _deps: PhantomData,
         }
     }
 
     pub fn program(&self) -> Program {
         self.program
+    }
+
+    /// Give the program shared state; rules reach it with `deps.get::<D>()` in `build`.
+    #[must_use]
+    pub fn deps<D: ProgramDeps>(mut self) -> Self {
+        self.deps = bootstrap_deps::<D>;
+        self
+    }
+
+    fn stream<P>(
+        mut self,
+        parser: P,
+        rules: StreamRules<P::Output>,
+        wrap: fn(BoxPipeline<'static, P::Input>) -> StreamPipeline,
+    ) -> Self
+    where
+        P: Parser + Clone + Debug + Send + Sync + 'static,
+        P::Input: StreamInput,
+        P::Output: Send + Sync + 'static,
+    {
+        self.pipelines.push(Box::new(StreamSpec {
+            parser,
+            rules,
+            wrap,
+        }));
+        self
+    }
+
+    /// An account-update pipeline. Rules must implement `StreamRule<Event = P::Output>`.
+    #[must_use]
+    pub fn account<P>(self, parser: P, rules: StreamRules<P::Output>) -> Self
+    where
+        P: Parser<Input = shipstern_core::AccountUpdate> + Clone + Debug + Send + Sync + 'static,
+        P::Output: Send + Sync + 'static,
+    {
+        self.stream(parser, rules, StreamPipeline::Account)
+    }
+
+    /// An instruction pipeline, gated locally on the transaction accounts of its subscription.
+    #[must_use]
+    pub fn instruction<P>(self, parser: P, rules: StreamRules<P::Output>) -> Self
+    where
+        P: Parser<Input = shipstern_core::instruction::InstructionUpdate>
+            + Clone
+            + Debug
+            + Send
+            + Sync
+            + 'static,
+        P::Output: Send + Sync + 'static,
+    {
+        self.stream(parser, rules, StreamPipeline::Instruction)
+    }
+
+    /// A whole-transaction pipeline.
+    #[must_use]
+    pub fn transaction<P>(self, parser: P, rules: StreamRules<P::Output>) -> Self
+    where
+        P: Parser<Input = shipstern_core::TransactionUpdate>
+            + Clone
+            + Debug
+            + Send
+            + Sync
+            + 'static,
+        P::Output: Send + Sync + 'static,
+    {
+        self.stream(parser, rules, StreamPipeline::Transaction)
+    }
+
+    /// A poll feed: `getMultipleAccounts` on `default_interval` unless a rule asks for its own cadence.
+    #[must_use]
+    pub fn poll<S: PollSource>(
+        mut self,
+        source: S,
+        default_interval: Duration,
+        rules: PollRules<S::Item>,
+    ) -> Self {
+        self.pipelines.push(Box::new(PollSpec {
+            source: Arc::new(source),
+            default_interval,
+            rules,
+        }));
+        self
     }
 
     /// Every rule this program can run, whether or not it is configured.
@@ -414,114 +411,22 @@ impl ProgramSpec {
         }
         let mut pipelines = Vec::with_capacity(self.pipelines.len());
         for spec in &self.pipelines {
-            let validated = spec.validate(self.program, raw)?;
-            if !validated.is_empty() {
+            if let Some(validated) = spec.validate(self.program, raw)? {
                 pipelines.push(validated);
             }
         }
         Ok(ValidatedProgram {
             program: self.program,
-            deps: Arc::clone(&self.deps),
+            deps: self.deps,
             pipelines,
         })
-    }
-}
-
-impl ProgramBuilder<()> {
-    /// Give the program shared state. Call before registering any pipeline.
-    pub fn deps<D: ProgramDeps>(self) -> ProgramBuilder<D> {
-        assert!(
-            self.pipelines.is_empty(),
-            "ProgramSpec::deps must be called before any pipeline is registered"
-        );
-        ProgramBuilder {
-            program: self.program,
-            pipelines: Vec::new(),
-            _deps: PhantomData,
-        }
-    }
-}
-
-impl<D: ProgramDeps> ProgramBuilder<D> {
-    fn stream<P>(mut self, parser: P, rules: StreamRules<P::Output, D>) -> Self
-    where
-        P: Parser + Clone + Debug + Send + Sync + 'static,
-        P::Input: StreamInput,
-        P::Output: Send + Sync + 'static,
-    {
-        self.pipelines.push(Box::new(StreamSpec { parser, rules }));
-        self
-    }
-
-    /// An account-update pipeline. Rules must implement `GrpcRule<Event = P::Output>`.
-    #[must_use]
-    pub fn account<P>(self, parser: P, rules: StreamRules<P::Output, D>) -> Self
-    where
-        P: Parser<Input = shipstern_core::AccountUpdate> + Clone + Debug + Send + Sync + 'static,
-        P::Output: Send + Sync + 'static,
-    {
-        self.stream(parser, rules)
-    }
-
-    /// An instruction pipeline, gated locally on the transaction accounts of its subscription.
-    #[must_use]
-    pub fn instruction<P>(self, parser: P, rules: StreamRules<P::Output, D>) -> Self
-    where
-        P: Parser<Input = shipstern_core::instruction::InstructionUpdate>
-            + Clone
-            + Debug
-            + Send
-            + Sync
-            + 'static,
-        P::Output: Send + Sync + 'static,
-    {
-        self.stream(parser, rules)
-    }
-
-    /// A whole-transaction pipeline.
-    #[must_use]
-    pub fn transaction<P>(self, parser: P, rules: StreamRules<P::Output, D>) -> Self
-    where
-        P: Parser<Input = shipstern_core::TransactionUpdate>
-            + Clone
-            + Debug
-            + Send
-            + Sync
-            + 'static,
-        P::Output: Send + Sync + 'static,
-    {
-        self.stream(parser, rules)
-    }
-
-    /// A poll feed: `getMultipleAccounts` on `default_interval` unless a rule asks for its own cadence.
-    #[must_use]
-    pub fn poll<S: PollSource>(
-        mut self,
-        source: S,
-        default_interval: Duration,
-        rules: PollRules<S::Item, D>,
-    ) -> Self {
-        self.pipelines.push(Box::new(PollSpec {
-            source: Arc::new(source),
-            default_interval,
-            rules,
-        }));
-        self
-    }
-
-    pub fn finish(self) -> ProgramSpec {
-        ProgramSpec {
-            program: self.program,
-            deps: Arc::new(Factory::<D>(PhantomData)),
-            pipelines: self.pipelines,
-        }
     }
 }
 
 /// A program whose configured rules passed typed validation; nothing has connected yet.
 pub struct ValidatedProgram {
     program: Program,
-    deps: Arc<dyn DepsFactory>,
+    deps: DepsBootstrap,
     pipelines: Vec<Box<dyn ValidatedPipeline>>,
 }
 
@@ -542,118 +447,44 @@ impl ValidatedProgram {
         }
     }
 
-    /// `Deps::bootstrap`, then build + bootstrap every configured rule.
-    pub async fn bootstrap(self, ctx: &BootstrapCtx) -> anyhow::Result<BootstrappedProgram> {
+    /// Bootstrap deps, then every rule; build the stream pipelines and spawn poll / sweep loops.
+    pub async fn start(self, ctx: &StartCtx<'_>) -> anyhow::Result<StartedProgram> {
         let started = tokio::time::Instant::now();
-        let deps = self.deps.bootstrap(ctx).await?;
-        let mut pipelines = Vec::with_capacity(self.pipelines.len());
+        let deps = Deps((self.deps)(&ctx.bootstrap).await?);
+        let mut out = StartedProgram {
+            program: self.program,
+            deps: Arc::clone(&deps.0),
+            pipelines: Vec::new(),
+            streams: Vec::new(),
+        };
         for pipeline in self.pipelines {
-            pipelines.push(pipeline.build(deps.as_ref(), ctx).await?);
+            pipeline.start(self.program, &deps, ctx, &mut out).await?;
         }
         info!(
             program = %self.program,
             elapsed_ms = started.elapsed().as_millis() as u64,
-            "Program bootstrapped"
+            "Program started"
         );
-        Ok(BootstrappedProgram {
-            program: self.program,
-            deps,
-            pipelines,
-        })
+        Ok(out)
     }
 }
 
-pub struct BootstrappedProgram {
-    program: Program,
-    deps: Arc<dyn DynDeps>,
-    pipelines: Vec<Box<dyn BuiltPipeline>>,
+/// A program after `start`: its stream pipelines for the runtime builder, plus
+/// what the refresh loop needs.
+pub struct StartedProgram {
+    pub program: Program,
+    pub deps: Arc<dyn ProgramDeps>,
+    pub pipelines: Vec<StreamPipeline>,
+    pub(crate) streams: Vec<InstalledStream>,
 }
 
-impl BootstrappedProgram {
-    pub fn program(&self) -> Program {
-        self.program
-    }
-
-    /// Add the stream pipelines to the dispatcher and spawn poll / sweep loops.
-    pub fn install(self, target: &mut InstallTarget<'_>) -> InstalledProgram {
-        target.program = self.program;
-        target.dynamic_subscription = self.deps.dynamic_subscription();
-        target.installed = Vec::new();
-        for pipeline in self.pipelines {
-            pipeline.install(target);
-        }
-        InstalledProgram {
-            program: self.program,
-            deps: self.deps,
-            streams: std::mem::take(&mut target.installed),
-        }
-    }
-}
-
-/// Everything installing needs, plus the runtime builder the stream pipelines go into.
-pub struct InstallTarget<'a> {
-    pub(crate) sink: &'a mut dyn PipelineSink,
-    pub(crate) rpc: Arc<RpcClient>,
-    pub(crate) alerts_tx: mpsc::Sender<Alert>,
-    pub(crate) cancel_token: CancellationToken,
-    pub(crate) tracker: &'a TaskTracker,
-    grpc_pipelines: usize,
-    program: Program,
-    dynamic_subscription: Subscription,
-    installed: Vec<InstalledStream>,
-}
-
-impl<'a> InstallTarget<'a> {
-    pub fn new(
-        sink: &'a mut dyn PipelineSink,
-        rpc: Arc<RpcClient>,
-        alerts_tx: mpsc::Sender<Alert>,
-        cancel_token: CancellationToken,
-        tracker: &'a TaskTracker,
-    ) -> Self {
-        Self {
-            sink,
-            rpc,
-            alerts_tx,
-            cancel_token,
-            tracker,
-            grpc_pipelines: 0,
-            program: Program::new(""),
-            dynamic_subscription: Subscription::default(),
-            installed: Vec::new(),
-        }
-    }
-
-    /// How many stream pipelines were added to the sink.
-    pub fn finish(self) -> usize {
-        self.grpc_pipelines
-    }
-}
-
-/// One stream pipeline as installed, enough to recompute its filters on refresh.
+/// One stream pipeline as built, enough to recompute its filters on refresh.
 pub(crate) struct InstalledStream {
     pub kind: PipelineKind,
     pub base_id: String,
     pub parser_prefilter: shipstern_core::Prefilter,
     pub static_subscription: Subscription,
     pub subscriptions: usize,
-}
-
-/// A program after install; carries what the refresh loop needs.
-pub struct InstalledProgram {
-    pub(crate) program: Program,
-    pub(crate) deps: Arc<dyn DynDeps>,
-    pub(crate) streams: Vec<InstalledStream>,
-}
-
-impl InstalledProgram {
-    pub fn program(&self) -> Program {
-        self.program
-    }
-
-    pub fn refresh_interval(&self) -> Option<Duration> {
-        self.deps.refresh_interval()
-    }
 }
 
 // ---- check report -----------------------------------------------------------
@@ -745,10 +576,8 @@ fn describe(sub: &Subscription) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::handler::RuleHandler;
     use crate::raw::{RawInstruction, RawInstructionParser};
-    use crate::rule::{DynGrpcRule, GrpcRule, NoConfig, RuleDef, StreamCtx};
-    use crate::rule_set::StreamRules;
+    use crate::rule::{BuiltStreamRule, NoConfig, StreamCtx, StreamRule};
     use crate::testing::ix_update;
     use crate::Alert;
     use shipstern::Handler;
@@ -760,21 +589,17 @@ mod tests {
     #[derive(Debug)]
     struct AnyIx;
 
-    impl RuleDef for AnyIx {
+    impl StreamRule for AnyIx {
         const ID: RuleId = RuleId::new(PROGRAM, "any_ix");
         type Config = NoConfig;
-        type Deps = ();
-
-        fn build(_: NoConfig, _: &()) -> anyhow::Result<Self> {
-            Ok(Self)
-        }
-    }
-
-    impl GrpcRule for AnyIx {
         type Event = RawInstruction;
 
-        fn static_subscription(_: &NoConfig) -> Subscription {
+        fn subscription(_: &NoConfig) -> Subscription {
             Subscription::new().tx_accounts_include([WATCHED])
+        }
+
+        fn build(_: NoConfig, _: &Deps) -> anyhow::Result<Self> {
+            Ok(Self)
         }
 
         fn evaluate(&self, ix: &RawInstruction, ctx: &StreamCtx) -> Option<Alert> {
@@ -791,9 +616,8 @@ mod tests {
     /// validate → static subscription → build → handler evaluates and forwards, with `tx_sig` filled in.
     #[tokio::test]
     async fn validated_rule_fires_through_handler() {
-        let spec = ProgramSpec::builder(PROGRAM)
-            .instruction(RawInstructionParser, StreamRules::new().register::<AnyIx>())
-            .finish();
+        let spec = ProgramSpec::new(PROGRAM)
+            .instruction(RawInstructionParser, StreamRules::new().register::<AnyIx>());
 
         let raw = RawRuleMap::from([(
             "any_ix".to_string(),
@@ -815,9 +639,8 @@ mod tests {
             Err(RuleConfigError::UnknownRule { .. })
         ));
 
-        let rule: Arc<dyn DynGrpcRule<RawInstruction>> = Arc::new(AnyIx);
         let (tx, mut rx) = mpsc::channel(4);
-        let handler = RuleHandler::<RawInstruction>::new(vec![rule], tx);
+        let handler = RuleHandler::new(vec![BuiltStreamRule::new(AnyIx, None)], tx);
         let update = ix_update(Pubkey::new_unique(), &[WATCHED], vec![1, 2, 3]);
         let event = RawInstructionParser.parse(&update).await.unwrap();
         handler.handle(&event, &update).await.unwrap();

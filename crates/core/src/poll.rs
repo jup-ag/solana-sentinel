@@ -1,7 +1,7 @@
 //! The poll feed: one loop per cadence bucket fetching `getMultipleAccounts`,
-//! parsing through the program's [`PollSource`], evaluating its [`RpcRule`]s.
+//! parsing through the program's [`PollSource`], evaluating its [`PollRule`]s.
 //!
-//! [`RpcRule`]: crate::rule::RpcRule
+//! [`PollRule`]: crate::rule::PollRule
 
 use crate::handler::forward_alert;
 use crate::rule::PollCtx;
@@ -46,7 +46,7 @@ pub fn spawn_poll_loop<S: PollSource>(
         program = %program,
         poll_interval_secs = interval.as_secs(),
         accounts = accounts.len(),
-        rules = ?rules.iter().map(|r| r.id().name).collect::<Vec<_>>(),
+        rules = ?rules.iter().map(|r| r.id.name).collect::<Vec<_>>(),
         "Spawning poll loop"
     );
 
@@ -72,7 +72,7 @@ pub fn spawn_poll_loop<S: PollSource>(
                     let (accounts_map, ctx) = fetched;
                     for item in source.parse(&accounts_map, &ctx) {
                         for rule in &rules {
-                            if let Some(alert) = rule.evaluate(&item, &ctx) {
+                            if let Some(alert) = (rule.evaluate)(&item, &ctx) {
                                 forward_alert(alert, Some(ctx.slot), None, &alerts_tx).await;
                             }
                         }

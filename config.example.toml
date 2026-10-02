@@ -116,11 +116,20 @@ incident_auth_token = "REPLACE_ME"
 escalation_policy_id = "REPLACE_ME"
 requester_email = "REPLACE_ME"
 
-# Optional. Without `[redis]` the cooldown and fleet gates are in-memory and the
-# slot checkpoint is not persisted: fine for one local process, not for a fleet.
+# Optional; shown with defaults. Two dedup layers run before an alert reaches a sink:
+# the cooldown gate (this node, within the rule's `cooldown_period_seconds`) and the
+# fleet gate (any node). Set either to false to skip that check entirely.
+[alerting]
+cooldown_gate = true
+fleet_gate = true
+# Fleet gate claim TTL for rules that set no `cooldown_period_seconds`.
+fleet_gate_default_ttl_seconds = 600
+
+# Optional. Without `[redis]` the enabled gates are in-memory and the slot
+# checkpoint is not persisted: fine for one local process, not for a fleet.
 [redis]
-# Ex: "redis://localhost:6379"
-# Per-pod sidecar Redis for slot checkpoint and cooldown gate
+# Per-pod sidecar Redis for the slot checkpoint and the cooldown gate.
 redis_sidecar_url = "redis://localhost:6379"
-# Fleet-wide shared Redis for fleet gate (alert deduplication)
+# Optional fleet-wide Redis cluster for the fleet gate. Without it the fleet
+# gate still runs, but dedups within this process only.
 redis_fleet_url = "redis://redis-fleet.example:6379"

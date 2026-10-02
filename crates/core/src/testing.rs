@@ -1,26 +1,22 @@
 //! Fixture helpers for rule tests. Enable with the `testing` feature.
 
-use crate::rule::{PollCtx, RuleDef, StreamCtx};
+use crate::rule::{PollCtx, StreamCtx};
 use config::{Config, File, FileFormat};
+use serde::de::DeserializeOwned;
 use shipstern_core::instruction::{InstructionShared, InstructionUpdate, Path};
 use shipstern_core::{AccountUpdate, AccountUpdateInfo, KeyBytes, Parser};
 use solana_pubkey::Pubkey;
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Deserialize a `[rules.config]` body from TOML and build the rule with no deps and no bootstrap.
-pub fn rule_from_toml<R: RuleDef<Deps = ()>>(toml: &str) -> R {
-    rule_with_deps::<R>(toml, &())
-}
-
-pub fn rule_with_deps<R: RuleDef>(toml: &str, deps: &R::Deps) -> R {
-    let cfg: R::Config = Config::builder()
+/// Deserialize a `[rules.config]` body from TOML; pass it to the rule's `build`.
+pub fn config_from_toml<C: DeserializeOwned>(toml: &str) -> C {
+    Config::builder()
         .add_source(File::from_str(toml, FileFormat::Toml))
         .build()
         .expect("valid toml")
         .try_deserialize()
-        .expect("config deserializes");
-    R::build(cfg, deps).expect("rule builds")
+        .expect("config deserializes")
 }
 
 pub fn stream_ctx(slot: u64, tx_sig: Option<&str>) -> StreamCtx {
@@ -64,7 +60,7 @@ pub fn ix_update(program: Pubkey, accounts: &[Pubkey], data: Vec<u8>) -> Instruc
     }
 }
 
-/// Run a parser on a fixture and unwrap; the event a `GrpcRule` evaluates.
+/// Run a parser on a fixture and unwrap; the event a `StreamRule` evaluates.
 pub async fn parse<P: Parser>(parser: &P, input: &P::Input) -> P::Output {
     parser.parse(input).await.expect("parser accepts fixture")
 }
@@ -73,6 +69,6 @@ pub async fn parse<P: Parser>(parser: &P, input: &P::Input) -> P::Output {
 #[macro_export]
 macro_rules! assert_fires {
     ($rule:expr, $ev:expr, $ctx:expr) => {
-        $crate::GrpcRule::evaluate(&$rule, &$ev, &$ctx).expect("rule did not fire")
+        $crate::StreamRule::evaluate(&$rule, &$ev, &$ctx).expect("rule did not fire")
     };
 }

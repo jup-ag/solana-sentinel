@@ -5,7 +5,7 @@ use crate::{TokenBalance, PROGRAM};
 use serde::Deserialize;
 use solana_pubkey::Pubkey;
 use solana_sentinel::utility::pubkey::deserialize_pubkey_vec;
-use solana_sentinel::{Alert, DedupScope, PollCtx, RpcRule, RuleDef, RuleId, Severity};
+use solana_sentinel::{Alert, DedupScope, Deps, PollCtx, PollRule, RuleId, Severity};
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -24,20 +24,9 @@ pub struct LowBalance {
     min_amount: u64,
 }
 
-impl RuleDef for LowBalance {
+impl PollRule for LowBalance {
     const ID: RuleId = RuleId::new(PROGRAM, "low_balance");
     type Config = LowBalanceConfig;
-    type Deps = ();
-
-    fn build(cfg: Self::Config, _deps: &()) -> anyhow::Result<Self> {
-        Ok(Self {
-            watched: cfg.accounts.into_iter().collect(),
-            min_amount: cfg.min_amount,
-        })
-    }
-}
-
-impl RpcRule for LowBalance {
     type Item = TokenBalance;
 
     /// What the poll loop fetches for this rule; same-cadence rules share one request.
@@ -47,6 +36,13 @@ impl RpcRule for LowBalance {
 
     fn poll_interval(cfg: &Self::Config) -> Option<Duration> {
         cfg.poll_interval_seconds.map(Duration::from_secs)
+    }
+
+    fn build(cfg: Self::Config, _deps: &Deps) -> anyhow::Result<Self> {
+        Ok(Self {
+            watched: cfg.accounts.into_iter().collect(),
+            min_amount: cfg.min_amount,
+        })
     }
 
     fn evaluate(&self, item: &Self::Item, ctx: &PollCtx) -> Option<Alert> {

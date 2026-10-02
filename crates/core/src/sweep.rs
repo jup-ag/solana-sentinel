@@ -8,18 +8,17 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::info;
 
-pub fn spawn_sweep_loops<Ev: Send + Sync + 'static>(
+pub fn spawn_sweep_loops<Ev>(
     rules: &[BuiltStreamRule<Ev>],
     alerts_tx: &mpsc::Sender<Alert>,
     cancel_token: &CancellationToken,
     tracker: &TaskTracker,
 ) {
-    for built in rules {
-        let Some(interval) = built.sweep_interval else {
+    for rule in rules {
+        let Some((interval, sweep)) = rule.sweep.clone() else {
             continue;
         };
-        let rule = built.rule.clone();
-        let id = rule.id();
+        let id = rule.id;
         let alerts_tx = alerts_tx.clone();
         let cancel_token = cancel_token.clone();
         info!(rule = %id, interval_secs = interval.as_secs(), "Starting periodic sweep");
@@ -34,7 +33,7 @@ pub fn spawn_sweep_loops<Ev: Send + Sync + 'static>(
                         break;
                     }
                     _ = tick.tick() => {
-                        for alert in rule.sweep() {
+                        for alert in sweep() {
                             forward_alert(alert, None, None, &alerts_tx).await;
                         }
                     }

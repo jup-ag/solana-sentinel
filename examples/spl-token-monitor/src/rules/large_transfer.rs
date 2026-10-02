@@ -1,13 +1,14 @@
 //! Instruction rule: a `Transfer` / `TransferChecked` out of a watched token
 //! account at or above `min_amount`.
 
-use crate::{to_pubkey, PROGRAM};
+use crate::PROGRAM;
 use serde::Deserialize;
 use shipstern_spl_token_parser::instruction::Instruction;
 use shipstern_spl_token_parser::TokenProgram;
 use solana_pubkey::Pubkey;
 use solana_sentinel::utility::pubkey::deserialize_pubkey_vec;
-use solana_sentinel::{Alert, GrpcRule, RuleDef, RuleId, Severity, StreamCtx, Subscription};
+use solana_sentinel::utility::pubkey::to_solana_pubkey;
+use solana_sentinel::{Alert, Deps, RuleId, Severity, StreamCtx, StreamRule, Subscription};
 use std::collections::HashSet;
 
 /// The `[rules.config]` table of this rule in `rules.toml`.
@@ -26,38 +27,34 @@ pub struct LargeTransfer {
     min_amount: u64,
 }
 
-impl RuleDef for LargeTransfer {
+impl StreamRule for LargeTransfer {
     const ID: RuleId = RuleId::new(PROGRAM, "large_transfer");
     type Config = LargeTransferConfig;
-    type Deps = ();
+    type Event = TokenProgram;
 
-    fn build(cfg: Self::Config, _deps: &()) -> anyhow::Result<Self> {
+    /// Only transactions touching a watched account reach the parser.
+    fn subscription(cfg: &Self::Config) -> Subscription {
+        Subscription::new().tx_accounts_include(cfg.accounts.iter().copied())
+    }
+
+    fn build(cfg: Self::Config, _deps: &Deps) -> anyhow::Result<Self> {
         anyhow::ensure!(!cfg.accounts.is_empty(), "accounts must not be empty");
         Ok(Self {
             watched: cfg.accounts.into_iter().collect(),
             min_amount: cfg.min_amount,
         })
     }
-}
-
-impl GrpcRule for LargeTransfer {
-    type Event = TokenProgram;
-
-    /// Only transactions touching a watched account reach the parser.
-    fn static_subscription(cfg: &Self::Config) -> Subscription {
-        Subscription::new().tx_accounts_include(cfg.accounts.iter().copied())
-    }
 
     fn evaluate(&self, ev: &Self::Event, ctx: &StreamCtx) -> Option<Alert> {
         let (source, destination, amount) = match ev.instruction.as_ref()? {
             Instruction::Transfer(t) => (
-                to_pubkey(&t.accounts.source),
-                to_pubkey(&t.accounts.destination),
+                to_solana_pubkey(t.accounts.source.0),
+                to_solana_pubkey(t.accounts.destination.0),
                 t.args.amount,
             ),
             Instruction::TransferChecked(t) => (
-                to_pubkey(&t.accounts.source),
-                to_pubkey(&t.accounts.destination),
+                to_solana_pubkey(t.accounts.source.0),
+                to_solana_pubkey(t.accounts.destination.0),
                 t.args.amount,
             ),
             _ => return None,
@@ -85,8 +82,8 @@ impl GrpcRule for LargeTransfer {
 mod tests {
     use super::*;
     use shipstern_spl_token_parser::InstructionParser;
-    use solana_sentinel::testing::{ix_update, parse, rule_from_toml, stream_ctx};
-    use solana_sentinel::{assert_fires, GrpcRule};
+    use solana_sentinel::assert_fires;
+    use solana_sentinel::testing::{config_from_toml, ix_update, parse, stream_ctx};
 
     /// SPL Token `Transfer`: tag 3 followed by the little-endian amount.
     fn transfer_ix(amount: u64) -> Vec<u8> {
@@ -100,8 +97,8 @@ mod tests {
         let source = Pubkey::new_unique();
         let destination = Pubkey::new_unique();
         let owner = Pubkey::new_unique();
-        let rule: LargeTransfer =
-            rule_from_toml(&format!("accounts = [\"{source}\"]\nmin_amount = 1000"));
+        let cfg = config_from_toml(&format!("accounts = [\"{source}\"]\nmin_amount = 1000"));
+        let rule = LargeTransfer::build(cfg, &Deps::default()).unwrap();
         let ctx = stream_ctx(1, Some("sig"));
 
         let big = ix_update(
@@ -117,8 +114,8 @@ mod tests {
             &[source, destination, owner],
             transfer_ix(10),
         );
-        assert!(
-            GrpcRule::evaluate(&rule, &parse(&InstructionParser, &small).await, &ctx).is_none()
-        );
+        assert!(rule
+            .evaluate(&parse(&InstructionParser, &small).await, &ctx)
+            .is_none());
     }
 }

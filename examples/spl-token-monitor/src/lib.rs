@@ -18,7 +18,7 @@ pub const PROGRAM: Program = Program::new("spl_token");
 /// Every feed the program exposes and every rule that can run on it. `rules.toml`
 /// picks which rules are active; an unregistered rule name is a startup error.
 pub fn spec() -> ProgramSpec {
-    ProgramSpec::builder(PROGRAM)
+    ProgramSpec::new(PROGRAM)
         // Stream feeds: parsed instructions and account updates from the data source.
         .instruction(
             shipstern_spl_token_parser::InstructionParser,
@@ -34,7 +34,6 @@ pub fn spec() -> ProgramSpec {
             Duration::from_secs(60),
             PollRules::new().register::<rules::low_balance::LowBalance>(),
         )
-        .finish()
 }
 
 /// One fetched token account, as poll rules see it.
@@ -65,9 +64,4 @@ impl PollSource for TokenAccountSource {
             })
             .collect()
     }
-}
-
-/// The parsers hand back `shipstern_core` keys; rules compare `solana_pubkey` ones.
-pub(crate) fn to_pubkey(key: &shipstern_spl_token_parser::Pubkey) -> Pubkey {
-    Pubkey::new_from_array(key.0)
 }

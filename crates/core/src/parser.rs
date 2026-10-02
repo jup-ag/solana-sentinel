@@ -4,73 +4,76 @@
 //! bundled subscription, so without the gate a parser sees instructions from
 //! transactions another program subscribed to.
 
-use crate::handler::{RawEvent, RuleHandler};
+use crate::rule::StreamCtx;
 use crate::subscription::Subscription;
 use domain::programs::Program;
-use shipstern::builder::RuntimeBuilder;
-use shipstern::filter_pipeline::FilterPipeline;
+use observability::prometheus::metrics::GrpcEvent;
 use shipstern::handler::BoxPipeline;
-use shipstern::sources::SourceTrait;
 use shipstern_core::instruction::{AccountKeys, InstructionUpdate};
 use shipstern_core::{
-    AccountUpdate, ParseError, ParseResult, Parser, PrefilterBuilder, SlotUpdate, TransactionUpdate,
+    AccountUpdate, ParseError, ParseResult, Parser, PrefilterBuilder, TransactionUpdate,
 };
 use solana_pubkey::Pubkey;
 use std::borrow::Cow;
 use std::collections::HashSet;
-use std::fmt::Debug;
+use utility::signature::bytes_to_signature_str;
 
-/// Where installed pipelines go: a shipstern runtime builder for whichever
-/// source the deployment configured, behind an object-safe surface.
-pub trait PipelineSink {
-    fn add_account(&mut self, pipeline: BoxPipeline<'static, AccountUpdate>);
-    fn add_instruction(&mut self, pipeline: BoxPipeline<'static, InstructionUpdate>);
-    fn add_transaction(&mut self, pipeline: BoxPipeline<'static, TransactionUpdate>);
-    fn add_slot(&mut self, pipeline: BoxPipeline<'static, SlotUpdate>);
-}
-
-impl<S: SourceTrait> PipelineSink for RuntimeBuilder<S> {
-    fn add_account(&mut self, pipeline: BoxPipeline<'static, AccountUpdate>) {
-        *self = std::mem::take(self).account(pipeline);
-    }
-
-    fn add_instruction(&mut self, pipeline: BoxPipeline<'static, InstructionUpdate>) {
-        *self = std::mem::take(self).instruction(pipeline);
-    }
-
-    fn add_transaction(&mut self, pipeline: BoxPipeline<'static, TransactionUpdate>) {
-        *self = std::mem::take(self).transaction(pipeline);
-    }
-
-    fn add_slot(&mut self, pipeline: BoxPipeline<'static, SlotUpdate>) {
-        *self = std::mem::take(self).slot(pipeline);
-    }
-}
-
-/// Which pipeline kind a raw update type belongs to, and how to install it.
-pub trait StreamInput: RawEvent + Sized + Send + Sync + 'static {
+/// A raw shipstern update the framework can build a [`StreamCtx`] from.
+pub trait StreamInput: Send + Sync + 'static {
     const KIND: PipelineKind;
 
-    /// The shipstern prefilters this subscription expands to for this kind.
-    fn prefilters(subscription: &Subscription) -> Vec<PrefilterBuilder>;
+    fn stream_ctx(&self) -> StreamCtx;
 
-    /// Whether the kind shares one bundled pipeline and so needs the local gate.
-    fn needs_gate() -> bool {
-        false
-    }
-
+    /// Instruction updates re-check the transaction accounts locally; the others pass.
     fn passes_gate(&self, _gate: &TxGate) -> bool {
         true
     }
+}
 
-    fn add_pipeline<P, Ev>(
-        sink: &mut dyn PipelineSink,
-        parser: FrameworkParser<P>,
-        handler: RuleHandler<Ev>,
-        sub: PrefilterBuilder,
-    ) where
-        P: Parser<Input = Self, Output = Ev> + Debug + Send + Sync + 'static,
-        Ev: Send + Sync + 'static;
+impl StreamInput for AccountUpdate {
+    const KIND: PipelineKind = PipelineKind::Account;
+
+    fn stream_ctx(&self) -> StreamCtx {
+        let account = self.account.as_ref();
+        StreamCtx {
+            slot: self.slot,
+            tx_sig: account
+                .and_then(|a| a.txn_signature.as_deref())
+                .map(bytes_to_signature_str),
+            account: account.and_then(|a| Pubkey::try_from(a.pubkey.as_slice()).ok()),
+        }
+    }
+}
+
+impl StreamInput for InstructionUpdate {
+    const KIND: PipelineKind = PipelineKind::Instruction;
+
+    fn stream_ctx(&self) -> StreamCtx {
+        StreamCtx {
+            slot: self.shared.slot,
+            tx_sig: Some(bytes_to_signature_str(&self.shared.signature)),
+            account: None,
+        }
+    }
+
+    fn passes_gate(&self, gate: &TxGate) -> bool {
+        gate.matches(&self.shared.accounts)
+    }
+}
+
+impl StreamInput for TransactionUpdate {
+    const KIND: PipelineKind = PipelineKind::Transaction;
+
+    fn stream_ctx(&self) -> StreamCtx {
+        StreamCtx {
+            slot: self.slot,
+            tx_sig: self
+                .transaction
+                .as_ref()
+                .map(|t| bytes_to_signature_str(&t.signature)),
+            account: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,85 +93,35 @@ impl PipelineKind {
             Self::Poll => "poll",
         }
     }
-}
 
-impl StreamInput for AccountUpdate {
-    const KIND: PipelineKind = PipelineKind::Account;
-
-    fn prefilters(subscription: &Subscription) -> Vec<PrefilterBuilder> {
-        subscription.account_prefilters()
-    }
-
-    fn add_pipeline<P, Ev>(
-        sink: &mut dyn PipelineSink,
-        parser: FrameworkParser<P>,
-        handler: RuleHandler<Ev>,
-        sub: PrefilterBuilder,
-    ) where
-        P: Parser<Input = Self, Output = Ev> + Debug + Send + Sync + 'static,
-        Ev: Send + Sync + 'static,
-    {
-        let pipeline = FilterPipeline::new(parser, [handler], sub);
-        sink.add_account(Box::new(pipeline));
-    }
-}
-
-impl StreamInput for InstructionUpdate {
-    const KIND: PipelineKind = PipelineKind::Instruction;
-
-    fn prefilters(subscription: &Subscription) -> Vec<PrefilterBuilder> {
-        if subscription.watches_transactions() {
-            vec![subscription.tx_prefilter()]
-        } else {
-            Vec::new()
+    /// The shipstern prefilters a subscription expands to for this kind.
+    pub fn prefilters(self, subscription: &Subscription) -> Vec<PrefilterBuilder> {
+        match self {
+            Self::Account => subscription.account_prefilters(),
+            Self::Instruction | Self::Transaction if subscription.watches_transactions() => {
+                vec![subscription.tx_prefilter()]
+            }
+            Self::Instruction | Self::Transaction | Self::Poll => Vec::new(),
         }
     }
 
-    fn needs_gate() -> bool {
-        true
-    }
-
-    fn passes_gate(&self, gate: &TxGate) -> bool {
-        gate.matches(&self.shared.accounts)
-    }
-
-    fn add_pipeline<P, Ev>(
-        sink: &mut dyn PipelineSink,
-        parser: FrameworkParser<P>,
-        handler: RuleHandler<Ev>,
-        sub: PrefilterBuilder,
-    ) where
-        P: Parser<Input = Self, Output = Ev> + Debug + Send + Sync + 'static,
-        Ev: Send + Sync + 'static,
-    {
-        let pipeline = FilterPipeline::new(parser, [handler], sub);
-        sink.add_instruction(Box::new(pipeline));
+    pub(crate) fn metric(self) -> GrpcEvent {
+        match self {
+            Self::Account => GrpcEvent::AccountUpdate,
+            Self::Instruction => GrpcEvent::InstructionUpdate,
+            Self::Transaction => GrpcEvent::TransactionUpdate,
+            // Poll feeds have no stream handler, so this is never asked.
+            Self::Poll => unreachable!("poll pipelines record no stream metric"),
+        }
     }
 }
 
-impl StreamInput for TransactionUpdate {
-    const KIND: PipelineKind = PipelineKind::Transaction;
-
-    fn prefilters(subscription: &Subscription) -> Vec<PrefilterBuilder> {
-        if subscription.watches_transactions() {
-            vec![subscription.tx_prefilter()]
-        } else {
-            Vec::new()
-        }
-    }
-
-    fn add_pipeline<P, Ev>(
-        sink: &mut dyn PipelineSink,
-        parser: FrameworkParser<P>,
-        handler: RuleHandler<Ev>,
-        sub: PrefilterBuilder,
-    ) where
-        P: Parser<Input = Self, Output = Ev> + Debug + Send + Sync + 'static,
-        Ev: Send + Sync + 'static,
-    {
-        let pipeline = FilterPipeline::new(parser, [handler], sub);
-        sink.add_transaction(Box::new(pipeline));
-    }
+/// A stream pipeline ready for the runtime builder; the consumer adds it to
+/// whichever source it configured.
+pub enum StreamPipeline {
+    Account(BoxPipeline<'static, AccountUpdate>),
+    Instruction(BoxPipeline<'static, InstructionUpdate>),
+    Transaction(BoxPipeline<'static, TransactionUpdate>),
 }
 
 /// The transaction-level part of a pipeline's subscription, re-checked locally.

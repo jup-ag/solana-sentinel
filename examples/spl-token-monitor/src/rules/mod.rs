@@ -1,5 +1,5 @@
-//! One file per rule. Each implements `RuleDef` (identity, typed config,
-//! construction) plus `GrpcRule` (stream-fed) or `RpcRule` (poll-fed).
+//! One file per rule. Each implements `StreamRule` (stream-fed) or
+//! `PollRule` (poll-fed): identity, typed config, subscription, `evaluate`.
 
 pub mod balance_drop;
 pub mod large_transfer;

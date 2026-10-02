@@ -1,7 +1,7 @@
 //! Push a changed dynamic subscription to the live stream without a restart.
 
 use crate::parser::{scoped_parser_id, PipelineKind};
-use crate::spec::InstalledProgram;
+use crate::spec::StartedProgram;
 use crate::BootstrapCtx;
 use shipstern::RuntimeHandle;
 use shipstern_core::PrefilterBuilder;
@@ -10,14 +10,14 @@ use tokio_util::task::TaskTracker;
 use tracing::{error, info, warn};
 
 pub fn spawn_refresh_loops(
-    programs: Vec<InstalledProgram>,
+    programs: Vec<StartedProgram>,
     handle: &RuntimeHandle,
     ctx: &BootstrapCtx,
     cancel_token: &CancellationToken,
     tracker: &TaskTracker,
 ) {
     for program in programs {
-        let Some(interval) = program.refresh_interval() else {
+        let Some(interval) = program.deps.refresh_interval() else {
             continue;
         };
         info!(program = %program.program, interval_secs = interval.as_secs(), "Starting subscription refresh loop");
@@ -51,15 +51,14 @@ pub fn spawn_refresh_loops(
     }
 }
 
-fn push(program: &InstalledProgram, dynamic: &crate::Subscription, handle: &RuntimeHandle) {
+fn push(program: &StartedProgram, dynamic: &crate::Subscription, handle: &RuntimeHandle) {
     for stream in &program.streams {
+        // Instruction parsers share one bundled filter across programs; not refreshable per program.
+        if stream.kind == PipelineKind::Instruction {
+            continue;
+        }
         let subscription = stream.static_subscription.clone().union(dynamic.clone());
-        let subs: Vec<PrefilterBuilder> = match stream.kind {
-            PipelineKind::Account => subscription.account_prefilters(),
-            PipelineKind::Transaction => vec![subscription.tx_prefilter()],
-            // Instruction parsers share one bundled filter across programs; not refreshable per program.
-            PipelineKind::Instruction | PipelineKind::Poll => continue,
-        };
+        let subs: Vec<PrefilterBuilder> = stream.kind.prefilters(&subscription);
         if subs.len() != stream.subscriptions {
             warn!(
                 program = %program.program,
