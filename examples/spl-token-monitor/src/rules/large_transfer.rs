@@ -6,8 +6,7 @@ use serde::Deserialize;
 use shipstern_spl_token_parser::instruction::Instruction;
 use shipstern_spl_token_parser::TokenProgram;
 use solana_pubkey::Pubkey;
-use solana_sentinel::utility::pubkey::deserialize_pubkey_vec;
-use solana_sentinel::utility::pubkey::to_solana_pubkey;
+use solana_sentinel::utility::pubkey::{deserialize_pubkey_vec, to_solana_pubkey};
 use solana_sentinel::{Alert, Deps, RuleId, Severity, StreamCtx, StreamRule, Subscription};
 use std::collections::HashSet;
 
