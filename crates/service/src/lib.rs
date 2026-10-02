@@ -71,31 +71,44 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
     let (router, cooldowns) = wiring::build_alerting_router(&config, &programs)?;
 
     // Sidecar Redis holds per-pod state (slot checkpoint, cooldown gate); fleet Redis the shared
-    // gate. Without `[redis]` both gates are in-memory, which is fine for a single local process.
-    let (cooldown_gate, fleet_gate, redis_sidecar_conn) = match config.redis() {
-        Some(redis) => {
-            let sidecar = connect_to_redis(&redis.redis_sidecar_url).await?;
-            let fleet = connect_to_redis_cluster(&redis.redis_fleet_url).await?;
-            (
-                CooldownGate::new(
-                    sidecar.clone(),
-                    cooldowns.clone(),
-                    &pod_id,
-                    opts.service_name,
-                ),
-                FleetGate::new(fleet, cooldowns, opts.service_name),
-                Some(sidecar),
-            )
-        }
+    // gate. Without `[redis]` enabled gates are in-memory, which is fine for a single local process.
+    let redis_sidecar_conn = match config.redis() {
+        Some(redis) => Some(connect_to_redis(&redis.redis_sidecar_url).await?),
         None => {
-            info!("No [redis] configured; using in-memory cooldown and fleet gates");
-            (
-                CooldownGate::in_memory(cooldowns.clone()),
-                FleetGate::in_memory(cooldowns),
-                None,
-            )
+            info!(
+                "No [redis] configured; gates run in-memory and the slot checkpoint is not \
+                 persisted"
+            );
+            None
         }
     };
+
+    let gates = config.alerting();
+    let cooldown_gate = match (gates.cooldown_gate, &redis_sidecar_conn) {
+        (false, _) => None,
+        (true, Some(sidecar)) => Some(CooldownGate::new(
+            sidecar.clone(),
+            cooldowns.clone(),
+            &pod_id,
+            opts.service_name,
+        )),
+        (true, None) => Some(CooldownGate::in_memory(cooldowns.clone())),
+    };
+    let fleet_gate = match (
+        gates.fleet_gate,
+        config.redis().and_then(|r| r.redis_fleet_url.as_deref()),
+    ) {
+        (false, _) => None,
+        (true, Some(url)) => {
+            let fleet = connect_to_redis_cluster(url).await?;
+            Some(FleetGate::new(fleet, cooldowns, opts.service_name))
+        }
+        (true, None) => {
+            info!("No redis_fleet_url configured; fleet gate dedups within this process only");
+            Some(FleetGate::in_memory(cooldowns))
+        }
+    }
+    .map(|g| g.with_default_ttl(Duration::from_secs(gates.fleet_gate_default_ttl_seconds)));
 
     // Tracks the last seen slot and persists it to Redis for recovery across restarts.
     let slot_tracker = SlotTracker::try_init(

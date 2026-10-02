@@ -40,6 +40,7 @@ subscriptions without connecting anywhere.
 Copy `config.example.toml` to your deployment as `config.toml`, point `[rpc]` and
 `[data_source]` at your endpoints, use the `stdout` sink, and leave `[redis]` and
 `[observability.betterstack]` out: gates become in-memory and no heartbeat is sent.
+To skip dedup altogether set `cooldown_gate = false` and `fleet_gate = false` under `[alerting]`.
 
 ## Add a rule
 
@@ -52,18 +53,15 @@ Copy `config.example.toml` to your deployment as `config.toml`, point `[rpc]` an
    #[derive(Debug)]
    pub struct MyRule { config: MyRuleConfig }
 
-   impl RuleDef for MyRule {
+   impl StreamRule for MyRule {              // stream-fed; or `PollRule` for poll-fed
        const ID: RuleId = RuleId::new(crate::PROGRAM, "my_rule");
        type Config = MyRuleConfig;
-       type Deps = ();                       // or the program's shared cache type
-       fn build(config: Self::Config, _deps: &()) -> anyhow::Result<Self> { Ok(Self { config }) }
+       type Event = <the parser's output>;
+       fn subscription(cfg: &Self::Config) -> Subscription { Subscription::new().accounts(...) }
+       fn build(config: Self::Config, _deps: &Deps) -> anyhow::Result<Self> { Ok(Self { config }) }
+       // `deps.get::<Cache>()?` reaches the program's shared state
        // async fn bootstrap(&mut self, ctx: &BootstrapCtx) -> anyhow::Result<()> for RPC warm-up
        // (needs #[async_trait] on the impl)
-   }
-
-   impl GrpcRule for MyRule {                // stream-fed; or `RpcRule` for poll-fed
-       type Event = <the parser's output>;
-       fn static_subscription(cfg: &Self::Config) -> Subscription { Subscription::new().accounts(...) }
        // fn sweep_interval(cfg: &Self::Config) -> Option<Duration> + fn sweep(&self) for periodic checks
        fn evaluate(&self, ev: &Self::Event, ctx: &StreamCtx) -> Option<Alert> {
            Some(Alert::for_rule(Self::ID).severity(..).message(..).meta(k, v).key([..]).scope(ctx.tx_scope()).build())
@@ -72,14 +70,15 @@ Copy `config.example.toml` to your deployment as `config.toml`, point `[rpc]` an
    ```
 
 2. Add `pub mod <rule>;` to `rules/mod.rs` and one `.register::<MyRule>()` line in `lib.rs::spec()`.
-   Registering a `GrpcRule` on `.poll(..)` or an `RpcRule` on `.account(..)` is a compile error.
+   Registering a `StreamRule` on `.poll(..)` or a `PollRule` on `.account(..)` is a compile error,
+   as is a rule whose `Event` is not the parser's output.
 3. Add the `[[rules]]` entry to `rules.toml`.
-4. Add a fixture test with `solana_sentinel::testing` (`rule_from_toml`, `account_update`,
+4. Add a fixture test with `solana_sentinel::testing` (`config_from_toml`, `account_update`,
    `ix_update`, `stream_ctx`, `assert_fires!`); enable the `testing` feature in dev-dependencies.
 
 Guidance:
 
-- `static_subscription` must be a pure function of config and constants. Chain-discovered
+- `subscription` must be a pure function of config and constants. Chain-discovered
   accounts (vaults, PDAs found by scanning) belong on the program's `ProgramDeps`.
 - `Subscription` is the framework's ask; it expands into shipstern prefilters with yellowstone
   semantics: within one prefilter `accounts`, `owners` and data filters are ANDed.
@@ -105,22 +104,22 @@ A program crate is `lib.rs` with `PROGRAM` and `spec()`, a parser (a codama pars
 pub const PROGRAM: Program = Program::new("my_program");
 
 pub fn spec() -> ProgramSpec {
-    ProgramSpec::builder(PROGRAM)
+    ProgramSpec::new(PROGRAM)
         .account(MyAccountParser::new(), StreamRules::new().register::<MyAccountRule>())
         .instruction(MyIxParser::new(), StreamRules::new().register::<MyIxRule>())
         .poll(MySource, Duration::from_secs(60), PollRules::new().register::<MyPollRule>())
-        .finish()
 }
 ```
 
 1. Add the crate to your deployment workspace and to your binary's `Cargo.toml`.
 2. Add `<name>::spec` to the `PROGRAMS` list your binary passes to `run`.
 
-A program with a shared cache implements `ProgramDeps` and calls `.deps::<Cache>()` before
-registering pipelines. `dynamic_subscription` feeds every pipeline; `refresh_interval` + `refresh`
+A program with a shared cache implements `ProgramDeps` and calls `.deps::<Cache>()`; its rules
+reach it with `deps.get::<Cache>()?` in `build` (a type mismatch fails at startup).
+`dynamic_subscription` feeds every pipeline; `refresh_interval` + `refresh`
 push a changed set to the live subscription without a restart.
 
-A poll-fed program implements `PollSource` and registers `RpcRule`s with
+A poll-fed program implements `PollSource` and registers `PollRule`s with
 `.poll(source, default_interval, rules)`. Rules on the same cadence share one
 `getMultipleAccounts` per tick.
 

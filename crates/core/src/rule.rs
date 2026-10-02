@@ -1,7 +1,7 @@
-//! Rule traits. [`RuleDef`] is shared; a rule implements exactly one of
-//! [`GrpcRule`] (stream-fed) or [`RpcRule`] (poll-fed).
+//! Rule traits: a rule implements exactly one of [`StreamRule`] (fed by a
+//! parser pipeline) or [`PollRule`] (fed by an RPC poll loop).
 
-use crate::deps::ProgramDeps;
+use crate::deps::Deps;
 use crate::subscription::Subscription;
 use crate::BootstrapCtx;
 use async_trait::async_trait;
@@ -46,46 +46,32 @@ pub struct PollCtx {
     pub fetched_at: Instant,
 }
 
-/// Identity, config, construction and bootstrap. Shared by both feeds.
+/// A rule fed by an account, instruction or transaction pipeline.
 #[async_trait]
-pub trait RuleDef: Sized + Send + Sync + 'static {
+pub trait StreamRule: Sized + Send + Sync + 'static {
     /// Program + name; the name is what `rules.toml` refers to.
     const ID: RuleId;
     /// Typed config, deserialized from the rule's `[rules.config]` table before any I/O.
     type Config: DeserializeOwned + Send + Sync + 'static;
-    /// Program shared state, `()` for most programs.
-    type Deps: ProgramDeps;
-
-    fn build(cfg: Self::Config, deps: &Self::Deps) -> anyhow::Result<Self>;
-
-    /// Seed caches from RPC. Runs after `Deps::bootstrap`, before any event is delivered.
-    async fn bootstrap(&mut self, _ctx: &BootstrapCtx) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn name() -> &'static str {
-        Self::ID.name
-    }
-
-    fn program() -> Program {
-        Self::ID.program
-    }
-}
-
-/// Fed by a shipstern account, instruction or transaction pipeline.
-pub trait GrpcRule: RuleDef {
     /// The pipeline parser's output.
     type Event: Send + Sync + 'static;
 
     /// Pure function of constants and config; shapes the subscription.
-    fn static_subscription(cfg: &Self::Config) -> Subscription;
+    fn subscription(cfg: &Self::Config) -> Subscription;
+
+    /// `deps.get::<Cache>()` for the program's shared state; most rules ignore it.
+    fn build(cfg: Self::Config, deps: &Deps) -> anyhow::Result<Self>;
+
+    /// Seed caches from RPC. Runs after the deps bootstrap, before any event is delivered.
+    async fn bootstrap(&mut self, _ctx: &BootstrapCtx) -> anyhow::Result<()> {
+        Ok(())
+    }
 
     /// Rules that keep last-seen state use interior mutability (`StateCache`);
     /// the handler and the sweep loop may call concurrently.
     fn evaluate(&self, ev: &Self::Event, ctx: &StreamCtx) -> Option<Alert>;
 
     /// Optional periodic re-evaluation with no incoming event (interest accrual, staleness).
-    /// Read once from config, like [`RpcRule::poll_interval`].
     fn sweep_interval(_cfg: &Self::Config) -> Option<Duration> {
         None
     }
@@ -95,8 +81,12 @@ pub trait GrpcRule: RuleDef {
     }
 }
 
-/// Fed by a poll loop that fetches `accounts()` on a cadence and parses through the program's [`crate::PollSource`].
-pub trait RpcRule: RuleDef {
+/// A rule fed by a poll loop: `accounts()` are fetched on a cadence and parsed
+/// through the program's [`crate::PollSource`].
+#[async_trait]
+pub trait PollRule: Sized + Send + Sync + 'static {
+    const ID: RuleId;
+    type Config: DeserializeOwned + Send + Sync + 'static;
     /// The program's `PollSource::Item`.
     type Item: Send + Sync + 'static;
 
@@ -107,55 +97,66 @@ pub trait RpcRule: RuleDef {
         None
     }
 
+    fn build(cfg: Self::Config, deps: &Deps) -> anyhow::Result<Self>;
+
+    async fn bootstrap(&mut self, _ctx: &BootstrapCtx) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     fn evaluate(&self, item: &Self::Item, ctx: &PollCtx) -> Option<Alert>;
 }
 
-/// Object-safe view of a [`GrpcRule`]; handlers hold `Arc<dyn DynGrpcRule<Ev>>`.
-pub trait DynGrpcRule<Ev>: Send + Sync {
-    fn id(&self) -> RuleId;
-    fn evaluate(&self, ev: &Ev, ctx: &StreamCtx) -> Option<Alert>;
-    fn sweep(&self) -> Vec<Alert>;
-}
+pub type StreamEvalFn<Ev> = Arc<dyn Fn(&Ev, &StreamCtx) -> Option<Alert> + Send + Sync>;
+pub type SweepFn = Arc<dyn Fn() -> Vec<Alert> + Send + Sync>;
+pub type PollEvalFn<It> = Arc<dyn Fn(&It, &PollCtx) -> Option<Alert> + Send + Sync>;
 
-impl<R: GrpcRule> DynGrpcRule<R::Event> for R {
-    fn id(&self) -> RuleId {
-        R::ID
-    }
-
-    fn evaluate(&self, ev: &R::Event, ctx: &StreamCtx) -> Option<Alert> {
-        GrpcRule::evaluate(self, ev, ctx)
-    }
-
-    fn sweep(&self) -> Vec<Alert> {
-        GrpcRule::sweep(self)
-    }
-}
-
-/// Object-safe view of an [`RpcRule`].
-pub trait DynRpcRule<It>: Send + Sync {
-    fn id(&self) -> RuleId;
-    fn evaluate(&self, item: &It, ctx: &PollCtx) -> Option<Alert>;
-}
-
-impl<R: RpcRule> DynRpcRule<R::Item> for R {
-    fn id(&self) -> RuleId {
-        R::ID
-    }
-
-    fn evaluate(&self, item: &R::Item, ctx: &PollCtx) -> Option<Alert> {
-        RpcRule::evaluate(self, item, ctx)
-    }
-}
-
-/// One rule, shared by the pipeline handler and its sweep loop.
-pub type SharedGrpcRule<Ev> = Arc<dyn DynGrpcRule<Ev>>;
-
-/// A built stream rule plus the sweep cadence its config asked for.
+/// A bootstrapped stream rule with its type erased; the handler and the sweep loop share it.
 pub struct BuiltStreamRule<Ev> {
-    pub rule: SharedGrpcRule<Ev>,
-    pub sweep_interval: Option<Duration>,
+    pub id: RuleId,
+    pub evaluate: StreamEvalFn<Ev>,
+    pub sweep: Option<(Duration, SweepFn)>,
 }
-pub type SharedRpcRule<It> = Arc<dyn DynRpcRule<It>>;
+
+// Derived `Clone` would demand `Ev: Clone`; only the `Arc`s are cloned.
+impl<Ev> Clone for BuiltStreamRule<Ev> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            evaluate: Arc::clone(&self.evaluate),
+            sweep: self.sweep.clone(),
+        }
+    }
+}
+
+impl<Ev: Send + Sync + 'static> BuiltStreamRule<Ev> {
+    pub fn new<R: StreamRule<Event = Ev>>(rule: R, sweep_interval: Option<Duration>) -> Self {
+        let rule = Arc::new(rule);
+        let eval = Arc::clone(&rule);
+        Self {
+            id: R::ID,
+            evaluate: Arc::new(move |ev: &Ev, ctx: &StreamCtx| eval.evaluate(ev, ctx)),
+            sweep: sweep_interval.map(|interval| {
+                let sweeper: SweepFn = Arc::new(move || rule.sweep());
+                (interval, sweeper)
+            }),
+        }
+    }
+}
+
+/// A bootstrapped poll rule with its type erased.
+pub struct BuiltPollRule<It> {
+    pub id: RuleId,
+    pub evaluate: PollEvalFn<It>,
+}
+
+impl<It: Send + Sync + 'static> BuiltPollRule<It> {
+    pub fn new<R: PollRule<Item = It>>(rule: R) -> Self {
+        Self {
+            id: R::ID,
+            evaluate: Arc::new(move |item: &It, ctx: &PollCtx| rule.evaluate(item, ctx)),
+        }
+    }
+}
 
 /// Config for rules that take none; accepts an empty or absent `[rules.config]`.
 #[derive(Debug, Clone, Copy, Default)]

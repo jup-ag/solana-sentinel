@@ -11,7 +11,7 @@ use solana_pubkey::Pubkey;
 use solana_sentinel::utility::pubkey::deserialize_pubkey_vec;
 use solana_sentinel::utility::rpc::try_fetch_accounts_with_slot;
 use solana_sentinel::{
-    Alert, BootstrapCtx, GrpcRule, RuleDef, RuleId, Severity, StateCache, StreamCtx, Subscription,
+    Alert, BootstrapCtx, Deps, RuleId, Severity, StateCache, StreamCtx, StreamRule, Subscription,
 };
 
 #[derive(Debug, Deserialize)]
@@ -32,12 +32,17 @@ pub struct BalanceDrop {
 }
 
 #[async_trait]
-impl RuleDef for BalanceDrop {
+impl StreamRule for BalanceDrop {
     const ID: RuleId = RuleId::new(PROGRAM, "balance_drop");
     type Config = BalanceDropConfig;
-    type Deps = ();
+    type Event = TokenProgramState;
 
-    fn build(cfg: Self::Config, _deps: &()) -> anyhow::Result<Self> {
+    /// Subscribe to exactly these pubkeys; the parser's own prefilter adds the owner.
+    fn subscription(cfg: &Self::Config) -> Subscription {
+        Subscription::new().accounts(cfg.accounts.iter().copied())
+    }
+
+    fn build(cfg: Self::Config, _deps: &Deps) -> anyhow::Result<Self> {
         anyhow::ensure!(
             (1..=10_000).contains(&cfg.drop_bps),
             "drop_bps must be within 1..=10000"
@@ -58,15 +63,6 @@ impl RuleDef for BalanceDrop {
                 Some((*pubkey, state.amount))
             }));
         Ok(())
-    }
-}
-
-impl GrpcRule for BalanceDrop {
-    type Event = TokenProgramState;
-
-    /// Subscribe to exactly these pubkeys; the parser's own prefilter adds the owner.
-    fn static_subscription(cfg: &Self::Config) -> Subscription {
-        Subscription::new().accounts(cfg.accounts.iter().copied())
     }
 
     fn evaluate(&self, ev: &Self::Event, ctx: &StreamCtx) -> Option<Alert> {
@@ -107,8 +103,8 @@ mod tests {
     use super::*;
     use shipstern_spl_token_parser::AccountParser;
     use solana_program_option::COption;
-    use solana_sentinel::testing::{account_update, parse, rule_from_toml, stream_ctx};
-    use solana_sentinel::{assert_fires, GrpcRule};
+    use solana_sentinel::assert_fires;
+    use solana_sentinel::testing::{account_update, config_from_toml, parse, stream_ctx};
     use spl_token_interface::state::{Account, AccountState};
 
     fn token_account(amount: u64) -> Vec<u8> {
@@ -130,8 +126,8 @@ mod tests {
     #[tokio::test]
     async fn fires_once_balance_falls_past_threshold() {
         let account = Pubkey::new_unique();
-        let rule: BalanceDrop =
-            rule_from_toml(&format!("accounts = [\"{account}\"]\ndrop_bps = 2000"));
+        let cfg = config_from_toml(&format!("accounts = [\"{account}\"]\ndrop_bps = 2000"));
+        let rule = BalanceDrop::build(cfg, &Deps::default()).unwrap();
         let mut ctx = stream_ctx(1, Some("sig"));
         ctx.account = Some(account);
         let update =
@@ -139,10 +135,10 @@ mod tests {
 
         // Without bootstrap the first update is the baseline and never fires.
         let first = parse(&AccountParser, &update(1_000)).await;
-        assert!(GrpcRule::evaluate(&rule, &first, &ctx).is_none());
+        assert!(rule.evaluate(&first, &ctx).is_none());
         // 10% down: below the threshold.
         let dip = parse(&AccountParser, &update(900)).await;
-        assert!(GrpcRule::evaluate(&rule, &dip, &ctx).is_none());
+        assert!(rule.evaluate(&dip, &ctx).is_none());
         // 900 -> 600 is a third: fires.
         let alert = assert_fires!(rule, parse(&AccountParser, &update(600)).await, ctx);
         assert_eq!(alert.metadata["previous"], "900");

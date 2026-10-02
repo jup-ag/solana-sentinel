@@ -10,7 +10,7 @@ NIGHTLY_TOOLCHAIN  ?= nightly
 CLIPPY_FLAGS       ?= --workspace --all-targets --all-features
 CLIPPY_DENY        ?= -D warnings
 
-MIGRATION_DIR      ?= ./migration
+MIGRATION_DIR      ?= ./crates/migration
 CLICKHOUSE_HOST    ?= localhost:9000
 CLICKHOUSE_DATABASE?= monitoring
 CLICKHOUSE_USERNAME?= default
@@ -119,4 +119,4 @@ run-tests: ## Run the workspace test suite
 	@printf "Tests completed\n"
 
 run-tests-integration: ## Run the Redis-backed alerting tests (needs Docker)
-	@$(CARGO) test -p alerting -- --ignored --nocapture
+	@$(CARGO) test -p solana-sentinel-alerting -- --ignored --nocapture

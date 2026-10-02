@@ -1,5 +1,6 @@
-//! Steps 4–6 of startup: bootstrap every validated program concurrently, install
-//! their pipelines into one shipstern runtime plus poll / sweep loops, run it.
+//! Steps 4–6 of startup: start every validated program concurrently (bootstrap,
+//! build pipelines, spawn poll / sweep loops), load the stream pipelines into
+//! one shipstern runtime, run it.
 
 use crate::config::service::{BufferSettings, DataSourceConfig};
 use crate::config::SentinelConfig;
@@ -19,9 +20,7 @@ use shipstern_core::Prefilter;
 use shipstern_slot_parser::SlotParser;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sentinel::refresh::spawn_refresh_loops;
-use solana_sentinel::{
-    BootstrapCtx, BootstrappedProgram, InstallTarget, PipelineSink, ValidatedProgram,
-};
+use solana_sentinel::{BootstrapCtx, StartCtx, StartedProgram, StreamPipeline, ValidatedProgram};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -78,21 +77,24 @@ impl ConsumerService {
             );
         }
 
-        let ctx = BootstrapCtx {
-            rpc: Arc::clone(&rpc),
-            grpc_slot: slot_tracker.reader(),
+        let ctx = StartCtx {
+            bootstrap: BootstrapCtx {
+                rpc,
+                grpc_slot: slot_tracker.reader(),
+            },
+            alerts_tx,
+            cancel_token: cancel_token.clone(),
+            tracker,
         };
 
         // Programs are independent; their RPC warm-ups overlap.
         let start = Instant::now();
-        let bootstrapped = try_join_all(programs.into_iter().map(|p| p.bootstrap(&ctx))).await?;
-        info!("Finished bootstrapping programs in {:.2?}", start.elapsed());
+        let started = try_join_all(programs.into_iter().map(|p| p.start(&ctx))).await?;
+        info!("Finished starting programs in {:.2?}", start.elapsed());
 
         let launch = Launch {
-            bootstrapped,
-            ctx,
-            rpc,
-            alerts_tx,
+            started,
+            ctx: ctx.bootstrap,
             slot_tracker,
             cancel_token,
             tracker,
@@ -143,41 +145,36 @@ impl ConsumerService {
 
 /// Everything needed to build and run the runtime once the source type is known.
 struct Launch<'a> {
-    bootstrapped: Vec<BootstrappedProgram>,
+    started: Vec<StartedProgram>,
     ctx: BootstrapCtx,
-    rpc: Arc<RpcClient>,
-    alerts_tx: mpsc::Sender<Alert>,
     slot_tracker: SlotTracker,
     cancel_token: CancellationToken,
     tracker: &'a TaskTracker,
 }
 
 impl Launch<'_> {
-    fn run<S: FilterUpdateSource>(self, source: S::Config, buffer: &BufferSettings)
+    fn run<S: FilterUpdateSource>(mut self, source: S::Config, buffer: &BufferSettings)
     where
         S::Config: Send,
     {
-        let mut builder = Runtime::<S>::builder();
         // Slot pipeline first: tracks the latest slot for observability and slot-lag rules.
-        builder.add_slot(Box::new(FilterPipeline::new(
+        let mut builder = Runtime::<S>::builder().slot(FilterPipeline::new(
             SlotParser,
             [self.slot_tracker.clone()],
             Prefilter::builder().slots(),
-        )));
+        ));
 
-        let mut target = InstallTarget::new(
-            &mut builder,
-            Arc::clone(&self.rpc),
-            self.alerts_tx,
-            self.cancel_token.clone(),
-            self.tracker,
-        );
-        let installed: Vec<_> = self
-            .bootstrapped
-            .into_iter()
-            .map(|p| p.install(&mut target))
-            .collect();
-        let grpc_pipelines = target.finish();
+        let mut grpc_pipelines = 0;
+        for program in &mut self.started {
+            for pipeline in std::mem::take(&mut program.pipelines) {
+                builder = match pipeline {
+                    StreamPipeline::Account(p) => builder.account(p),
+                    StreamPipeline::Instruction(p) => builder.instruction(p),
+                    StreamPipeline::Transaction(p) => builder.transaction(p),
+                };
+                grpc_pipelines += 1;
+            }
+        }
         info!(grpc_pipelines, "Stream pipelines installed");
 
         let runtime = builder.build(ShipsternConfig {
@@ -193,7 +190,7 @@ impl Launch<'_> {
         let handle = runtime.handle();
         spawn_runtime(runtime, self.cancel_token.clone(), self.tracker);
         spawn_refresh_loops(
-            installed,
+            self.started,
             &handle,
             &self.ctx,
             &self.cancel_token,

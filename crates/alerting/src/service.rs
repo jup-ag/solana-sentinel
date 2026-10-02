@@ -18,9 +18,10 @@ const SINK_DELIVERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct AlertingService {
     router: Router,
-    cooldown_gate: CooldownGate,
+    /// `None` disables that layer of dedup; see `should_send_alert`.
+    cooldown_gate: Option<CooldownGate>,
     alerts_rx: mpsc::Receiver<Alert>,
-    fleet_gate: FleetGate,
+    fleet_gate: Option<FleetGate>,
     cancel_token: CancellationToken,
     buffer_capacity: usize,
     flush_interval: Duration,
@@ -30,8 +31,8 @@ impl AlertingService {
     pub fn new(
         alerts_rx: mpsc::Receiver<Alert>,
         router: Router,
-        cooldown_gate: CooldownGate,
-        fleet_gate: FleetGate,
+        cooldown_gate: Option<CooldownGate>,
+        fleet_gate: Option<FleetGate>,
         cancel_token: CancellationToken,
     ) -> Self {
         Self {
@@ -71,6 +72,8 @@ impl AlertingService {
                 sink_count = router.sink_count(),
                 flush_interval = ?flush_interval,
                 buffer_capacity,
+                cooldown_gate = cooldown_gate.is_some(),
+                fleet_gate = fleet_gate.is_some(),
                 "Starting alerting service",
             );
 
@@ -196,39 +199,38 @@ impl AlertingService {
         futures::future::join_all(futures).await;
     }
 
+    /// Cooldown gate first (repeat of the same alert within its window), then
+    /// the fleet gate (already claimed by another node). A disabled gate passes.
     async fn should_send_alert(
         alert: &Alert,
-        cooldown_gate: &mut CooldownGate,
-        fleet_gate: &mut FleetGate,
+        cooldown_gate: &mut Option<CooldownGate>,
+        fleet_gate: &mut Option<FleetGate>,
     ) -> bool {
-        // Cooldown gate first: suppress a repeat of the same alert within the
-        // cooldown window.
-        match cooldown_gate.check(alert).await {
-            Ok(true) => {} // not in cooldown, continue to fleet gate
-            Ok(false) => {
-                debug!(rule = alert.rule.name, "Alert suppressed by cooldown");
-                record_alert_suppressed(alert.rule.name);
-                return false;
-            }
-            Err(e) => {
-                error!("Failed to check cooldown gate: {e}");
-                // fail-open: continue on Redis error to avoid losing alerts
+        if let Some(gate) = cooldown_gate {
+            match gate.check(alert).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    debug!(rule = alert.rule.name, "Alert suppressed by cooldown");
+                    record_alert_suppressed(alert.rule.name);
+                    return false;
+                }
+                // fail-open: a Redis error must not lose alerts
+                Err(e) => error!("Failed to check cooldown gate: {e}"),
             }
         }
 
-        // Fleet gate: suppress the same rule already claimed by another node.
-        match fleet_gate.check(alert).await {
-            Ok(true) => true, // we won the claim → send
-            Ok(false) => {
-                // Duplicate across the fleet;
-                debug!(rule = alert.rule.name, "Alert suppressed by fleet dedup");
-                record_alert_suppressed(alert.rule.name);
-                false
-            }
-            Err(e) => {
-                error!("Failed to check fleet gate: {e}");
-                true // fail-open: send on Redis error to avoid losing alerts
+        if let Some(gate) = fleet_gate {
+            match gate.check(alert).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    debug!(rule = alert.rule.name, "Alert suppressed by fleet dedup");
+                    record_alert_suppressed(alert.rule.name);
+                    return false;
+                }
+                Err(e) => error!("Failed to check fleet gate: {e}"),
             }
         }
+
+        true
     }
 }

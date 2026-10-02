@@ -1,6 +1,7 @@
 use crate::config::rules::{RuleConfig, RulesConfig};
 use crate::config::service::{
-    DataSourceConfig, ObservabilityConfig, RedisConfig, RpcConfig, ServiceConfig, SinkConfig,
+    AlertingConfig, DataSourceConfig, ObservabilityConfig, RedisConfig, RpcConfig, ServiceConfig,
+    SinkConfig,
 };
 
 pub mod rules;
@@ -52,6 +53,10 @@ impl SentinelConfig {
     /// `None` means no Redis: in-memory gates and no slot checkpoint (local runs).
     pub fn redis(&self) -> Option<&RedisConfig> {
         self.service.redis.as_ref()
+    }
+
+    pub fn alerting(&self) -> &AlertingConfig {
+        &self.service.alerting
     }
 }
 

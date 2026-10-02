@@ -3,10 +3,10 @@
 //! A program exports one [`ProgramSpec`]: a parser per feed plus the rules
 //! registered on it. The framework validates typed rule config with no I/O,
 //! bootstraps shared [`ProgramDeps`] before any rule, unions subscriptions,
-//! installs shipstern pipelines and poll loops, and forwards alerts.
+//! builds shipstern pipelines and poll loops, and forwards alerts.
 //!
-//! Adding a rule is one file implementing [`RuleDef`] plus [`GrpcRule`] or
-//! [`RpcRule`], and one `.register::<Rule>()` line in the program's `spec()`.
+//! Adding a rule is one file implementing [`StreamRule`] or [`PollRule`], and
+//! one `.register::<Rule>()` line in the program's `spec()`.
 
 pub mod cache;
 pub mod deps;
@@ -30,21 +30,18 @@ pub use ::observability;
 /// Pubkey / RPC / math helpers for rule authors.
 pub use ::utility;
 pub use cache::{StateCache, UnknownKey};
-pub use deps::ProgramDeps;
+pub use deps::{Deps, ProgramDeps};
 pub use domain::alert::{Alert, DedupScope, Severity};
 pub use domain::programs::Program;
 pub use domain::rules::RuleId;
 pub use observability::slot_tracker::GrpcSlotReader;
-pub use parser::PipelineSink;
+pub use parser::StreamPipeline;
 pub use poll::PollSource;
-pub use rule::{GrpcRule, NoConfig, PollCtx, RpcRule, RuleConfigError, RuleDef, StreamCtx};
+pub use rule::{NoConfig, PollCtx, PollRule, RuleConfigError, StreamCtx, StreamRule};
 pub use rule_set::{PollRules, StreamRules};
 pub use shipstern_core::{AccountFilter, MemcmpData};
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
-pub use spec::{
-    BootstrappedProgram, InstallTarget, InstalledProgram, ProgramReport, ProgramSpec,
-    ValidatedProgram,
-};
+pub use spec::{ProgramReport, ProgramSpec, StartCtx, StartedProgram, ValidatedProgram};
 use std::collections::HashMap;
 use std::sync::Arc;
 pub use subscription::Subscription;

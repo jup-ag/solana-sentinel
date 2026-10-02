@@ -9,9 +9,9 @@ on each of the three feeds, the binary that runs it, and its config.
 |---|---|
 | `src/main.rs` | The deployment binary: `run(RunOptions { service_name, programs })`. |
 | `src/lib.rs` | `PROGRAM`, `spec()` registering a parser + rules per feed, and a `PollSource`. |
-| `src/rules/large_transfer.rs` | Instruction rule (`GrpcRule`): transfers out of watched accounts above a threshold, per-transaction dedup. |
-| `src/rules/balance_drop.rs` | Account rule (`GrpcRule`) with a `StateCache` seeded from RPC in `bootstrap`. |
-| `src/rules/low_balance.rs` | Poll rule (`RpcRule`): its own account set and cadence, monitor-scoped dedup. |
+| `src/rules/large_transfer.rs` | Instruction rule (`StreamRule`): transfers out of watched accounts above a threshold, per-transaction dedup. |
+| `src/rules/balance_drop.rs` | Account rule (`StreamRule`) with a `StateCache` seeded from RPC in `bootstrap`. |
+| `src/rules/low_balance.rs` | Poll rule (`PollRule`): its own account set and cadence, monitor-scoped dedup. |
 | `rules.toml` | Activates the rules, routes them to sinks, and carries each rule's typed config. |
 | `config.toml` | Data source, RPC, observability and a stdout sink; nothing else is required locally. |
 
@@ -35,7 +35,7 @@ cargo test -p spl-token-monitor-example
 
 ### Adding a rule to this program
 
-1. Copy one of the files in `src/rules/` and change `ID`, `Config`, `static_subscription`
+1. Copy one of the files in `src/rules/` and change `ID`, `Config`, `subscription`
    (or `accounts` for a poll rule) and `evaluate`.
 2. Add `pub mod <rule>;` to `src/rules/mod.rs` and `.register::<Rule>()` on the matching
    feed in `spec()`. Registering a stream rule on `.poll(..)` is a compile error.
@@ -48,7 +48,7 @@ Copy this crate, replace the parsers (a codama parser from an IDL via
 bytes), write the rules, and add `<crate>::spec` to `PROGRAMS` in your binary.
 
 A program whose rules share chain-discovered state (vault lists, PDAs found by scanning)
-implements `ProgramDeps`, calls `.deps::<MyDeps>()` before the first pipeline, and returns
-those accounts from `dynamic_subscription`; `refresh_interval` + `refresh` push a changed set
-to the live subscription without a restart. This example needs none, so its rules use
-`type Deps = ()`.
+implements `ProgramDeps`, calls `.deps::<MyDeps>()` on the spec, and returns those accounts
+from `dynamic_subscription`; `refresh_interval` + `refresh` push a changed set to the live
+subscription without a restart. Rules reach it with `deps.get::<MyDeps>()?` in `build`.
+This example needs none, so its rules ignore the `deps` argument.

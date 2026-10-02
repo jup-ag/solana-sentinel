@@ -8,7 +8,8 @@ use std::ops::Sub;
 use std::sync::Arc;
 use std::time::Duration;
 
-const ALERTS_FLEET_GATE_KEY_REDIS_TTL_SECONDS: usize = 10 * 60; // 10 mins
+/// Claim TTL for rules without a cooldown period, unless overridden.
+const DEFAULT_TTL: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Clone)]
 enum Backend {
@@ -23,6 +24,7 @@ enum Backend {
 pub struct FleetGate {
     backend: Backend,
     periods: HashMap<RuleId, Duration>,
+    default_ttl: Duration,
     key_prefix: String,
 }
 
@@ -36,6 +38,7 @@ impl FleetGate {
         Self {
             backend: Backend::Redis(redis_conn),
             periods,
+            default_ttl: DEFAULT_TTL,
             key_prefix: format!("{namespace}:alerts:fleet_gate_key"),
         }
     }
@@ -45,15 +48,19 @@ impl FleetGate {
         Self {
             backend: Backend::Memory(Default::default()),
             periods,
+            default_ttl: DEFAULT_TTL,
             key_prefix: "memory".to_string(),
         }
     }
 
+    /// Claim TTL for rules that have no cooldown period of their own.
+    pub fn with_default_ttl(mut self, ttl: Duration) -> Self {
+        self.default_ttl = ttl;
+        self
+    }
+
     pub async fn check(&mut self, alert: &Alert) -> anyhow::Result<bool> {
-        let period = match self.periods.get(&alert.rule) {
-            Some(p) => p,
-            None => &Duration::from_secs(ALERTS_FLEET_GATE_KEY_REDIS_TTL_SECONDS as u64),
-        };
+        let period = self.periods.get(&alert.rule).unwrap_or(&self.default_ttl);
 
         // Subtract 1 second so the fleet key never outlives the cooldown key by a boundary
         // second, which would suppress the first alert after cooldown expiry.

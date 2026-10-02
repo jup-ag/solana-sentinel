@@ -16,14 +16,14 @@ RPC getMultipleAccounts ──────────────────�
 ```
 
 - **`ProgramSpec`** — what a program crate exports: a parser per feed and the rules registered on it.
-- **`RuleDef` + `GrpcRule` / `RpcRule`** — one rule, one file; typed config, static subscription, `evaluate`.
+- **`StreamRule` / `PollRule`** — one rule, one file, one trait; typed config, subscription, `evaluate`.
 - **`ProgramDeps`** — a program's shared cache, bootstrapped before any rule; owns chain-discovered watch sets.
 - **Data sources** — shipstern `SourceTrait` impls (Yellowstone gRPC, PubSub websocket, janus Kafka topics, or your own); rules never see the transport.
 - **`solana_sentinel_service::run`** — the whole service behind one call; a deployment binary passes its name and program list.
 - **`Router`** — `HashMap<RuleId, Vec<SinkId>>` fan-out from rules to sinks.
-- **`AlertingService`** — dedups (cooldown + fleet gates), batches and forwards alerts to sinks.
+- **`AlertingService`** — dedups (cooldown + fleet gates, each optional via `[alerting]`), batches and forwards alerts to sinks.
 
-See `CONTRIBUTING.md` for adding a rule or a program, and `docs/rfc-adapters-and-wiring.md`
+See `CONTRIBUTING.md` for adding a rule or a program, and `docs/arch.md`
 for the design.
 
 ## Using it
