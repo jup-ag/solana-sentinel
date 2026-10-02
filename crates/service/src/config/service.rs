@@ -1,9 +1,11 @@
 use anyhow::Result;
 use config::{Config, File, FileFormat};
 use domain::sinks::SinkId;
+use observability::HeartbeatSettings;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::time::Duration;
 use url::Url;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -12,8 +14,7 @@ pub struct ServiceConfig {
     pub rpc: RpcConfig,
     pub sinks: Vec<SinkConfig>,
     pub observability: ObservabilityConfig,
-    /// Optional: without it, enabled gates are in-memory and slot checkpoints are not persisted.
-    pub redis: Option<RedisConfig>,
+    pub redis: RedisConfig,
     /// Optional: cooldown gate layers. Both default to on.
     #[serde(default)]
     pub alerting: AlertingConfig,
@@ -25,8 +26,7 @@ pub struct AlertingConfig {
     pub cooldown_gate: CooldownGateConfig,
 }
 
-/// Cooldown gate: the two alert dedup layers. A disabled layer is never consulted;
-/// an enabled one uses Redis from `[redis]` when configured and process memory otherwise.
+/// Cooldown gate: the two alert dedup layers. A disabled layer is never consulted.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CooldownGateConfig {
     /// Per-node: suppress a repeat of the same alert within its rule's `cooldown_period_seconds`.
@@ -174,6 +174,15 @@ pub struct ObservabilityConfig {
     pub server: ServerConfig,
     /// Optional Betterstack heartbeat; omit for local runs.
     pub betterstack: Option<BetterstackHeartbeatConfig>,
+}
+
+impl ObservabilityConfig {
+    pub fn heartbeat(&self) -> Option<HeartbeatSettings<'_>> {
+        self.betterstack.as_ref().map(|hb| HeartbeatSettings {
+            url: hb.heartbeat_url.as_str(),
+            interval: Duration::from_secs(hb.heartbeat_interval_seconds),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -1,27 +1,16 @@
 use domain::alert::Alert;
 use domain::rules::RuleId;
-use parking_lot::Mutex;
 use redis::aio::ConnectionManager;
 use std::collections::HashMap;
 use std::time::Duration;
 
-/// Where the gate keeps its keys: per-pod Redis in production, process memory for local runs.
-#[derive(Clone)]
-enum Backend {
-    Redis {
-        conn: Box<ConnectionManager>,
-        key_prefix: String,
-    },
-    /// Cooldown key -> unix expiry (seconds). Swept lazily on each check.
-    Memory(std::sync::Arc<Mutex<HashMap<String, i64>>>),
-}
-
 // Layer 1 — intra-node dedup. Suppresses repeated alerts for the same condition
-// within that rule's cooldown period, with a per-rule TTL.
+// within that rule's cooldown period, with a per-rule TTL. Keys live in the pod's sidecar Redis.
 #[derive(Clone)]
 pub struct LocalGate {
     periods: HashMap<RuleId, Duration>,
-    backend: Backend,
+    conn: ConnectionManager,
+    key_prefix: String,
 }
 
 impl LocalGate {
@@ -34,18 +23,8 @@ impl LocalGate {
     ) -> Self {
         Self {
             periods,
-            backend: Backend::Redis {
-                conn: Box::new(redis_conn),
-                key_prefix: format!("{pod_id}:{namespace}:alerts:local_gate_key"),
-            },
-        }
-    }
-
-    /// No Redis: keys live in this process and are lost on restart.
-    pub fn in_memory(periods: HashMap<RuleId, Duration>) -> Self {
-        Self {
-            periods,
-            backend: Backend::Memory(Default::default()),
+            conn: redis_conn,
+            key_prefix: format!("{pod_id}:{namespace}:alerts:local_gate_key"),
         }
     }
 
@@ -61,18 +40,8 @@ impl LocalGate {
             .timestamp()
             .saturating_add(period.as_secs() as i64);
 
-        match &mut self.backend {
-            Backend::Redis { conn, key_prefix } => {
-                let key = format!("{key_prefix}:{}", alert.local_gate_key());
-                set_nx_exat(conn.as_mut(), &key, ttl_timestamp).await
-            }
-            Backend::Memory(map) => Ok(memory_set_nx(
-                &mut map.lock(),
-                alert.local_gate_key().to_string(),
-                ttl_timestamp,
-                alert.fired_at.timestamp(),
-            )),
-        }
+        let key = format!("{}:{}", self.key_prefix, alert.local_gate_key());
+        set_nx_exat(&mut self.conn, &key, ttl_timestamp).await
     }
 }
 
@@ -91,21 +60,6 @@ pub(crate) async fn set_nx_exat(
         .query_async(conn)
         .await?;
     Ok(set.is_some())
-}
-
-/// In-memory equivalent of `SET NX EXAT`; expired keys are dropped first.
-pub(crate) fn memory_set_nx(
-    map: &mut HashMap<String, i64>,
-    key: String,
-    expiry: i64,
-    now: i64,
-) -> bool {
-    map.retain(|_, exp| *exp > now);
-    if map.contains_key(&key) {
-        return false;
-    }
-    map.insert(key, expiry);
-    true
 }
 
 #[cfg(test)]

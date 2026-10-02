@@ -51,8 +51,8 @@ impl SentinelConfig {
     }
 
     /// `None` means no Redis: in-memory gates and no slot checkpoint (local runs).
-    pub fn redis(&self) -> Option<&RedisConfig> {
-        self.service.redis.as_ref()
+    pub fn redis(&self) -> &RedisConfig {
+        &self.service.redis
     }
 
     pub fn alerting(&self) -> &AlertingConfig {

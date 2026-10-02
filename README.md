@@ -94,7 +94,7 @@ Config is split by sensitivity into two files that both live in the deployment w
 - `RULES_FILE` may be a single file or a directory. A directory is read as every `*.toml` in it, in name order, so each project or scope can own its own file. Without an override, `./rules.toml` is used if present, else `./rules/`.
 - [`config.example.toml`](config.example.toml) documents every service setting.
 - `<binary> check` validates both files and prints the resolved subscriptions without connecting.
-- For a local run, use the `stdout` sink and leave `[redis]` and `[observability.betterstack]` out. Gates become in-memory and no heartbeat is sent.
+- For a local run, use the `stdout` sink, point `redis_sidecar_url` at a local Redis and leave `redis_fleet_url` and `[observability.betterstack]` out. The fleet gate becomes in-memory and no heartbeat is sent.
 
 ## Data sources
 
@@ -114,7 +114,7 @@ The cooldown gate runs before an alert reaches a sink. It has two layers, each o
 
 - **Local gate** — drops the same alert again within the rule's cooldown window. Per node, per rule, backed by a sidecar Redis.
 - **Fleet gate** — drops an alert another node already sent. Backed by a shared Redis cluster.
-- Without `[redis]`, both gates run in-memory. Fine for one process, not for a fleet.
+- Without `redis_fleet_url`, the fleet gate runs in-memory. Fine for one process, not for a fleet.
 
 Sinks are declared as `[[sinks]]` blocks with a `type` and a unique `id`. The same type can appear more than once, and rules route to any subset by `id`.
 

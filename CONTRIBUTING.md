@@ -40,8 +40,9 @@ own its rules in a file of its own. A rule name may appear in only one of them.
 ## Run a deployment locally
 
 Copy `config.example.toml` to your deployment as `config.toml`, point `[rpc]` and
-`[data_source]` at your endpoints, use the `stdout` sink, and leave `[redis]` and
-`[observability.betterstack]` out: gates become in-memory and no heartbeat is sent.
+`[data_source]` at your endpoints, use the `stdout` sink, point `redis_sidecar_url` at a
+local Redis, and leave `redis_fleet_url` and `[observability.betterstack]` out: the fleet
+gate becomes in-memory and no heartbeat is sent.
 To skip dedup altogether set `local_gate = false` and `fleet_gate = false` under `[alerting.cooldown_gate]`.
 
 ## Add a rule

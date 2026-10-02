@@ -1,4 +1,4 @@
-use crate::local_gate::{memory_set_nx, set_nx_exat};
+use crate::local_gate::set_nx_exat;
 use domain::alert::Alert;
 use domain::rules::RuleId;
 use parking_lot::Mutex;
@@ -82,6 +82,16 @@ impl FleetGate {
             )),
         }
     }
+}
+
+/// In-memory equivalent of `SET NX EXAT`; expired keys are dropped first.
+fn memory_set_nx(map: &mut HashMap<String, i64>, key: String, expiry: i64, now: i64) -> bool {
+    map.retain(|_, exp| *exp > now);
+    if map.contains_key(&key) {
+        return false;
+    }
+    map.insert(key, expiry);
+    true
 }
 
 #[cfg(test)]

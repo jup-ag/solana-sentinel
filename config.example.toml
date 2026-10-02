@@ -127,8 +127,6 @@ fleet_gate = true
 # Fleet gate claim TTL for rules that set no `cooldown_period_seconds`.
 fleet_gate_default_ttl_seconds = 600
 
-# Optional. Without `[redis]` the enabled gates are in-memory and the slot
-# checkpoint is not persisted: fine for one local process, not for a fleet.
 [redis]
 # Per-pod sidecar Redis for the slot checkpoint and the local gate.
 redis_sidecar_url = "redis://localhost:6379"
