@@ -35,7 +35,10 @@ a directory's `*.toml` files are concatenated in name order, so a project or sco
 own its rules in a file of its own. A rule name may appear in only one of them.
 
 `examples/spl-token-monitor/` is a complete, compiling deployment with a rule on every feed;
-`examples/README.md` walks through it.
+`examples/README.md` walks through it. `crates/rules-registry/` holds ready-made programs
+(system, SPL Token, BPF loader, wallet watchlist, service health) a deployment can run as-is
+via `solana_sentinel_rules_registry::PROGRAMS`, or copy from; `examples/registry-monitor/`
+runs all of them.
 
 ## Run a deployment locally
 

@@ -5099,6 +5099,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-sentinel-rules-registry"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde",
+ "shipstern-core",
+ "shipstern-spl-token-parser",
+ "solana-account",
+ "solana-account-decoder-client-types",
+ "solana-program-option",
+ "solana-program-pack",
+ "solana-pubkey 3.0.0",
+ "solana-rpc-client",
+ "solana-sentinel",
+ "spl-token-interface 3.0.0",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "solana-sentinel-service"
 version = "0.0.1"
 dependencies = [

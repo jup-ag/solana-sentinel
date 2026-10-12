@@ -25,6 +25,7 @@ observability = { path = "crates/observability", package = "solana-sentinel-obse
 alerting = { path = "crates/alerting", package = "solana-sentinel-alerting" }
 data-source = { path = "crates/data-source", package = "solana-sentinel-data-source" }
 solana-sentinel-service = { path = "crates/service" }
+solana-sentinel-rules-registry = { path = "crates/rules-registry" }
 
 
 # Solana
