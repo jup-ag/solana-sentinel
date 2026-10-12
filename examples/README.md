@@ -34,6 +34,27 @@ Run the rule tests:
 cargo test -p spl-token-monitor-example
 ```
 
+## `registry-monitor`
+
+The smallest deployment: no program crate of its own. The binary passes
+`solana_sentinel_rules_registry::PROGRAMS` to `run`, and `rules/` activates one rule
+from every registry program (system, SPL Token, BPF loader, wallet watchlist, health).
+
+| File | Shows |
+|---|---|
+| `src/main.rs` | `run(RunOptions { service_name, programs: PROGRAMS })` and nothing else. |
+| `rules/*.toml` | One file per registry program with a sample config for each of its rules. |
+| `tests/rules_validate.rs` | Every shipped rules block resolves to a registry rule and its sinks exist. |
+
+```sh
+CONFIG_FILE=examples/registry-monitor/config.toml \
+RULES_FILE=examples/registry-monitor/rules \
+cargo run -p registry-monitor-example -- check
+```
+
+Mix in your own programs by concatenating the lists, or copy a registry module
+(`crates/rules-registry/src/<program>/`) into your program crate and edit it.
+
 ### Adding a rule to this program
 
 1. Copy one of the files in `src/rules/` and change `ID`, `Config`, `subscription`

@@ -81,6 +81,43 @@ The fastest way in is the example deployment at [`examples/spl-token-monitor/`](
 
 4. **Add rules and programs.** [`CONTRIBUTING.md`](CONTRIBUTING.md) walks through both step by step.
 
+### Ready-made rules
+
+`crates/rules-registry` ships programs and rules you can run without writing any Rust. A deployment passes its `PROGRAMS` list to `run` and activates rules from its rules files:
+
+```rust
+use solana_sentinel_rules_registry::PROGRAMS;
+use solana_sentinel_service::{run, RunOptions};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    run(RunOptions { service_name: "my_monitor", programs: PROGRAMS }).await
+}
+```
+
+| Program | Rule | Fires when |
+|---|---|---|
+| `system` | `lamports_below` | a watched account's SOL balance is under a floor |
+| `system` | `large_sol_transfer` | a SOL transfer out of a watched account is at or above a size |
+| `system` | `nonce_activity` | a watched authority initializes, re-authorizes or drains a nonce account |
+| `spl_token` | `supply_increase` | a mint's supply grows by at least N basis points |
+| `spl_token` | `mint_authority_change` | a mint's mint or freeze authority changes |
+| `bpf_loader` | `program_upgrade` | a watched upgradeable program is redeployed |
+| `bpf_loader` | `upgrade_authority_change` | a program's upgrade authority changes or is removed |
+| `wallet` | `unapproved_program_invoke` | a watched wallet signs a call into a non-allowlisted program |
+| `wallet` | `anchor_idl_instruction` | an Anchor IDL admin instruction hits a watched program |
+| `health` | `slot_lag` | the stream's slot and the RPC slot drift apart |
+
+[`examples/registry-monitor/`](examples/registry-monitor/) activates every one of them with sample config:
+
+```sh
+CONFIG_FILE=examples/registry-monitor/config.toml \
+RULES_FILE=examples/registry-monitor/rules \
+cargo run -p registry-monitor-example -- check
+```
+
+To mix registry programs with your own, concatenate the lists: `PROGRAMS` is a plain `&[fn() -> ProgramSpec]`. Each registry module is also a template to copy into your own program crate.
+
 ## Configuration
 
 Config is split by sensitivity into two files that both live in the deployment workspace.
@@ -137,7 +174,9 @@ Metrics are exposed for **Prometheus / Grafana** on `[observability.server] bind
 | `crates/observability` | metrics HTTP server, slot tracker |
 | `crates/migration` | ClickHouse migrations for the alerts sink |
 | `crates/utility` | pubkey, signature, RPC and math helpers |
-| `examples/spl-token-monitor` | a complete, compiling deployment |
+| `crates/rules-registry` | ready-made programs and rules: system, SPL Token, BPF loader, wallet watchlist, service health |
+| `examples/spl-token-monitor` | a complete, compiling deployment with its own program crate |
+| `examples/registry-monitor` | the smallest deployment: the registry's programs plus a rules directory |
 | `docs/arch.md` | the full architecture diagram |
 
 ## Development

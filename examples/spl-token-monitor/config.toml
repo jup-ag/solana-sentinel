@@ -15,3 +15,8 @@ bind_addr = "127.0.0.1:8080"
 [[sinks]]
 type = "stdout"
 id = "stdout"
+
+[redis]
+# Local sidecar for the slot checkpoint and the local cooldown gate. No
+# `redis_fleet_url`, so the fleet gate runs in-memory.
+redis_sidecar_url = "redis://localhost:6379"
