@@ -10,13 +10,25 @@ pub enum ShutdownReason {
     Internal,
 }
 
-pub fn setup_crypto_provider() {
+/// Install the aws-lc-rs rustls provider unless the host already installed one.
+/// Returns `true` when this call installed it.
+pub fn setup_crypto_provider() -> bool {
+    if rustls::crypto::CryptoProvider::get_default().is_some() {
+        return false;
+    }
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
-        .expect("failed to install rustls crypto provider");
+        .expect("Failed to install default crypto provider");
+    true
 }
 
-pub fn setup_tracing_subscriber() {
+/// Install the default fmt subscriber (`RUST_LOG` filter, `LOG_FORMAT=json` for
+/// JSON lines) unless the host already set a global subscriber. Returns `true`
+/// when this call installed it.
+pub fn setup_tracing_subscriber() -> bool {
+    if tracing::dispatcher::has_been_set() {
+        return false;
+    }
     let env_filter = tracing_subscriber::EnvFilter::builder()
         .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
         .from_env_lossy();
@@ -27,9 +39,9 @@ pub fn setup_tracing_subscriber() {
         .with_line_number(true);
 
     if std::env::var("LOG_FORMAT").as_deref() == Ok("json") {
-        builder.json().flatten_event(true).init();
+        builder.json().flatten_event(true).try_init().is_ok()
     } else {
-        builder.init();
+        builder.try_init().is_ok()
     }
 }
 

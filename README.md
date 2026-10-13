@@ -81,6 +81,9 @@ The fastest way in is the example deployment at [`examples/spl-token-monitor/`](
 
 4. **Add rules and programs.** [`CONTRIBUTING.md`](CONTRIBUTING.md) walks through both step by step.
 
+The host owns the tokio runtime, the rustls crypto provider, and the tracing subscriber. `run` fills in defaults only for what is not already installed: aws-lc-rs for TLS, and an fmt subscriber that reads `RUST_LOG` and switches to JSON lines with `LOG_FORMAT=json`. To use your own, install it before calling `run`; `setup_crypto_provider` and `setup_tracing_subscriber` are exported if you want the defaults plus your own layers.
+
+
 ### Ready-made rules
 
 `crates/rules-registry` ships programs and rules you can run without writing any Rust. A deployment passes its `PROGRAMS` list to `run` and activates rules from its rules files:
