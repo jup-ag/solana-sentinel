@@ -71,8 +71,11 @@ pub async fn migrate() -> anyhow::Result<()> {
     Ok(())
 }
 
+// Respect a provider the host already installed; only fill in the default.
 fn setup_crypto_provider() {
-    rustls::crypto::aws_lc_rs::default_provider()
-        .install_default()
-        .expect("failed to install rustls crypto provider");
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        rustls::crypto::aws_lc_rs::default_provider()
+            .install_default()
+            .expect("Failed to install default crypto provider");
+    }
 }

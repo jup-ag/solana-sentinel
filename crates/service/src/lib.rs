@@ -9,10 +9,8 @@ pub mod wiring;
 
 use crate::config::SentinelConfig;
 use crate::consumer::ConsumerService;
-use crate::utils::{
-    connect_to_redis, extract_pod_id, setup_crypto_provider, setup_tracing_subscriber,
-    wait_for_shutdown_signal, ShutdownReason,
-};
+use crate::utils::{connect_to_redis, extract_pod_id, wait_for_shutdown_signal, ShutdownReason};
+pub use crate::utils::{setup_crypto_provider, setup_tracing_subscriber};
 use crate::validate::validate_programs;
 use alerting::service::AlertingService;
 use observability::slot_tracker::SlotTracker;
@@ -37,6 +35,10 @@ pub struct RunOptions {
 /// as the first CLI argument it validates config and exits after printing the
 /// resolved subscriptions. Exits the process non-zero on an internal stop so a
 /// supervisor restarts it.
+///
+/// The host owns the tokio runtime, the rustls crypto provider, and the tracing
+/// subscriber. Anything installed before this call is respected; otherwise
+/// [`setup_crypto_provider`] and [`setup_tracing_subscriber`] supply defaults.
 pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
     setup_crypto_provider();
     setup_tracing_subscriber();
