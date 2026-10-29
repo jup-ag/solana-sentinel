@@ -11,18 +11,18 @@ use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::message::Message as _;
 use serde::Deserialize;
-use shipstern::sources::{FilterUpdateSource, SourceExitStatus, SourceTrait};
+use shipstern::sources::{
+    FilterUpdateSource, FromConfig, SourceContext, SourceExitStatus, SourceTrait,
+};
 use shipstern_core::Filters;
 use std::collections::HashMap;
 use std::time::Duration;
-use tokio::sync::mpsc::Sender;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::watch;
 use tracing::{debug, info, warn};
 use yellowstone_grpc_proto::geyser::subscribe_update::UpdateOneof;
 use yellowstone_grpc_proto::geyser::{
     SubscribeUpdate, SubscribeUpdateAccount, SubscribeUpdateSlot, SubscribeUpdateTransaction,
 };
-use yellowstone_grpc_proto::tonic::Status;
 
 const RECV_ERROR_BACKOFF: Duration = Duration::from_secs(1);
 const CONFLUENT_MAGIC: u8 = 0x00;
@@ -50,7 +50,6 @@ pub struct KafkaConfig {
 #[derive(Debug)]
 pub struct KafkaSource {
     config: KafkaConfig,
-    filters: Filters,
 }
 
 impl KafkaSource {
@@ -76,27 +75,24 @@ impl KafkaSource {
         Ok(consumer)
     }
 
-    async fn run(
-        &self,
-        tx: Sender<Result<SubscribeUpdate, Status>>,
-        status_tx: oneshot::Sender<SourceExitStatus>,
-        mut filter_updates: Option<watch::Receiver<Filters>>,
-    ) -> Result<(), shipstern::Error> {
-        let consumer = match self.consumer() {
-            Ok(c) => c,
-            Err(e) => {
-                let _ = status_tx.send(SourceExitStatus::Error(e.to_string()));
-                return Err(shipstern::Error::Other(e.into()));
-            }
-        };
+    async fn run(&self, ctx: SourceContext) -> Result<SourceExitStatus, shipstern::Error> {
+        let SourceContext {
+            filters,
+            tx,
+            mut filter_updates,
+            ..
+        } = ctx;
+        let consumer = self
+            .consumer()
+            .map_err(|e| shipstern::Error::Other(e.into()))?;
         info!(
             brokers = %self.config.brokers,
             topics = ?self.config.topics,
             group = %self.config.group_id,
-            filters = ?self.filters.parser_ids().collect::<Vec<_>>(),
+            filters = ?filters.parser_ids().collect::<Vec<_>>(),
             "Kafka consumer subscribed"
         );
-        let mut current = self.filters.clone();
+        let mut current = filters;
         let mut last_slot = 0u64;
 
         loop {
@@ -147,16 +143,12 @@ impl KafkaSource {
             }
         }
         info!("Runtime gone; stopping Kafka source");
-        let _ = status_tx.send(SourceExitStatus::ReceiverDropped);
-        Ok(())
+        Ok(SourceExitStatus::ReceiverDropped)
     }
 }
 
-/// Yield the newest filter set, or pend forever when the runtime never sends any.
-pub(crate) async fn next_filters(rx: &mut Option<watch::Receiver<Filters>>) -> Option<Filters> {
-    let Some(rx) = rx else {
-        return std::future::pending().await;
-    };
+/// Yield the newest filter set, or pend forever once every runtime handle is dropped.
+pub(crate) async fn next_filters(rx: &mut watch::Receiver<Filters>) -> Option<Filters> {
     if rx.changed().await.is_err() {
         return std::future::pending().await;
     }
@@ -165,27 +157,16 @@ pub(crate) async fn next_filters(rx: &mut Option<watch::Receiver<Filters>>) -> O
 
 #[async_trait]
 impl SourceTrait for KafkaSource {
+    async fn connect(&self, ctx: SourceContext) -> Result<SourceExitStatus, shipstern::Error> {
+        self.run(ctx).await
+    }
+}
+
+impl FromConfig for KafkaSource {
     type Config = KafkaConfig;
 
-    fn new(config: Self::Config, filters: Filters) -> Self {
-        Self { config, filters }
-    }
-
-    async fn connect(
-        &self,
-        tx: Sender<Result<SubscribeUpdate, Status>>,
-        status_tx: oneshot::Sender<SourceExitStatus>,
-    ) -> Result<(), shipstern::Error> {
-        self.run(tx, status_tx, None).await
-    }
-
-    async fn connect_with_filter_updates(
-        &self,
-        tx: Sender<Result<SubscribeUpdate, Status>>,
-        status_tx: oneshot::Sender<SourceExitStatus>,
-        filter_updates_rx: watch::Receiver<Filters>,
-    ) -> Result<(), shipstern::Error> {
-        self.run(tx, status_tx, Some(filter_updates_rx)).await
+    fn from_config(config: Self::Config) -> Self {
+        Self { config }
     }
 }
 

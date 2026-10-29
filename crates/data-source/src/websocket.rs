@@ -11,7 +11,9 @@ use async_trait::async_trait;
 use futures::stream::{BoxStream, SelectAll};
 use futures::StreamExt;
 use serde::Deserialize;
-use shipstern::sources::{FilterUpdateSource, SourceExitStatus, SourceTrait};
+use shipstern::sources::{
+    FilterUpdateSource, FromConfig, SourceContext, SourceExitStatus, SourceTrait,
+};
 use shipstern_core::{AccountFilter, Filters, MemcmpData};
 use solana_account_decoder_client_types::UiAccountEncoding;
 use solana_commitment_config::CommitmentConfig;
@@ -29,12 +31,9 @@ use solana_transaction_status_client_types::UiTransactionEncoding;
 use std::collections::{HashSet, VecDeque};
 use std::str::FromStr;
 use std::time::Duration;
-use tokio::sync::mpsc::Sender;
-use tokio::sync::{oneshot, watch};
 use tracing::{debug, info, warn};
 use yellowstone_grpc_proto::geyser::subscribe_update::UpdateOneof;
 use yellowstone_grpc_proto::geyser::{SubscribeUpdate, SubscribeUpdateSlot};
-use yellowstone_grpc_proto::tonic::Status;
 
 /// `getTransaction` right after a log notification can miss; retry briefly.
 const TX_FETCH_ATTEMPTS: u32 = 5;
@@ -56,7 +55,6 @@ pub struct WebsocketConfig {
 
 pub struct WebsocketSource {
     config: WebsocketConfig,
-    filters: Filters,
     rpc: RpcClient,
 }
 
@@ -64,7 +62,6 @@ impl std::fmt::Debug for WebsocketSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WebsocketSource")
             .field("config", &self.config)
-            .field("filters", &self.filters.parser_ids().collect::<Vec<_>>())
             .finish_non_exhaustive()
     }
 }
@@ -81,32 +78,25 @@ impl WebsocketSource {
         }
     }
 
-    async fn run(
-        &self,
-        tx: Sender<Result<SubscribeUpdate, Status>>,
-        status_tx: oneshot::Sender<SourceExitStatus>,
-        mut filter_updates: Option<watch::Receiver<Filters>>,
-    ) -> Result<(), shipstern::Error> {
+    async fn run(&self, ctx: SourceContext) -> Result<SourceExitStatus, shipstern::Error> {
+        let SourceContext {
+            filters,
+            tx,
+            mut filter_updates,
+            ..
+        } = ctx;
         let commitment = self.commitment()?;
-        let client = match PubsubClient::new(&self.config.url).await {
-            Ok(c) => c,
-            Err(e) => {
-                let _ = status_tx.send(SourceExitStatus::Error(e.to_string()));
-                return Err(shipstern::Error::Other(Box::new(e)));
-            }
-        };
+        let client = PubsubClient::new(&self.config.url)
+            .await
+            .map_err(|e| shipstern::Error::Other(Box::new(e)))?;
         info!(url = %self.config.url, "PubSub connected");
 
         let mut streams: SelectAll<BoxStream<'_, Event>> = SelectAll::new();
         let mut opened = Opened::default();
-        let mut current = self.filters.clone();
-        if let Err(e) = self
-            .subscribe(&client, &current, commitment, &mut opened, &mut streams)
+        let mut current = filters;
+        self.subscribe(&client, &current, commitment, &mut opened, &mut streams)
             .await
-        {
-            let _ = status_tx.send(SourceExitStatus::Error(e.to_string()));
-            return Err(shipstern::Error::Other(e.into()));
-        }
+            .map_err(|e| shipstern::Error::Other(e.into()))?;
         let mut seen: VecDeque<String> = VecDeque::with_capacity(SEEN_SIGNATURES);
 
         loop {
@@ -134,39 +124,23 @@ impl WebsocketSource {
         }
         drop(streams);
         client.shutdown().await.ok();
-        let _ = status_tx.send(SourceExitStatus::ReceiverDropped);
-        Ok(())
+        Ok(SourceExitStatus::ReceiverDropped)
     }
 }
 
 #[async_trait]
 impl SourceTrait for WebsocketSource {
+    async fn connect(&self, ctx: SourceContext) -> Result<SourceExitStatus, shipstern::Error> {
+        self.run(ctx).await
+    }
+}
+
+impl FromConfig for WebsocketSource {
     type Config = WebsocketConfig;
 
-    fn new(config: Self::Config, filters: Filters) -> Self {
+    fn from_config(config: Self::Config) -> Self {
         let rpc = RpcClient::new(config.rpc_url.clone());
-        Self {
-            config,
-            filters,
-            rpc,
-        }
-    }
-
-    async fn connect(
-        &self,
-        tx: Sender<Result<SubscribeUpdate, Status>>,
-        status_tx: oneshot::Sender<SourceExitStatus>,
-    ) -> Result<(), shipstern::Error> {
-        self.run(tx, status_tx, None).await
-    }
-
-    async fn connect_with_filter_updates(
-        &self,
-        tx: Sender<Result<SubscribeUpdate, Status>>,
-        status_tx: oneshot::Sender<SourceExitStatus>,
-        filter_updates_rx: watch::Receiver<Filters>,
-    ) -> Result<(), shipstern::Error> {
-        self.run(tx, status_tx, Some(filter_updates_rx)).await
+        Self { config, rpc }
     }
 }
 

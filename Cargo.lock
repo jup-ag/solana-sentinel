@@ -106,6 +106,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "anchor-lang-idl"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62076a3c298f5447488e31c0198675b2fcbada1f71381af7104333cf6ff2581d"
+dependencies = [
+ "anchor-lang-idl-spec",
+ "anyhow",
+ "heck 0.3.3",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "anchor-lang-idl-spec"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2bdf143115440fe621bdac3a29a1f7472e09f6cd82b2aa569429a0c13f103838"
+dependencies = [
+ "anyhow",
+ "serde",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -714,7 +738,7 @@ version = "4.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2ce8604710f6733aa641a2b3731eaa1e8b3d9973d5e3565da11800813f997a9"
 dependencies = [
- "heck",
+ "heck 0.5.0",
  "proc-macro2",
  "quote",
  "syn",
@@ -796,9 +820,9 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "codama-errors"
-version = "0.9.3"
+version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "060a139175819c58b9349333971ef1b4a80f39b9b72b4c8638e4d6bbdbfa6234"
+checksum = "95bea6c7b0724cfabade2ec9aab60687f7bf2b8b039233054d70fc68d4fa3c7c"
 dependencies = [
  "cargo_toml",
  "proc-macro2",
@@ -809,9 +833,9 @@ dependencies = [
 
 [[package]]
 name = "codama-nodes"
-version = "0.9.1"
+version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4508aea0d3c9fae4f215bacdc65e5fa2f3dad62c3739cc687d3b64cbf5e8f5b3"
+checksum = "23b0d12fde4b749f4e28ef83a9b83e4aa00697a7847dfb0aa6d6e633a3f6421e"
 dependencies = [
  "codama-errors",
  "codama-nodes-derive",
@@ -822,9 +846,9 @@ dependencies = [
 
 [[package]]
 name = "codama-nodes-derive"
-version = "0.9.3"
+version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c70799d43b0ad8332e240245bd46d85d0bdfcd8083f3a3a70e810057b77ad78"
+checksum = "0bc8c5044a8de1157b61996276736ea1f6eabd83d55ceb5f6b810e4e3ac873c1"
 dependencies = [
  "codama-errors",
  "codama-syn-helpers",
@@ -836,9 +860,9 @@ dependencies = [
 
 [[package]]
 name = "codama-syn-helpers"
-version = "0.9.3"
+version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c5992337746ff67d1797a24c9a83278ffdad4e9ae06a6f8e28728bfe7634b25"
+checksum = "7689cf3c3a1cc524f5216cd3afa5c6d5bb9cf8d3b3d9e3900c3040b36eee13c1"
 dependencies = [
  "codama-errors",
  "derive_more",
@@ -1686,6 +1710,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea0b22561a9c04a7cb1a302c013e0259cd3b4bb619f145b32f72b8b4bcbed230"
 dependencies = [
  "hashbrown 0.16.1",
+]
+
+[[package]]
+name = "heck"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d621efb26863f0e9924c6ac577e8275e5e6b77455db64ffa6c65c904e9e132c"
+dependencies = [
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -3046,7 +3079,7 @@ version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "343d3bd7056eda839b03204e68deff7d1b13aba7af2b2fd16890697274262ee7"
 dependencies = [
- "heck",
+ "heck 0.5.0",
  "itertools 0.14.0",
  "log",
  "multimap",
@@ -4076,9 +4109,9 @@ dependencies = [
 
 [[package]]
 name = "shipstern"
-version = "0.9.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e063543e87dfe203b3935395a8267470009ef534fa331c2f219b3d8233ae6b5c"
+checksum = "5fdc147b5be7820f230719cb3a6689277a831993be3d3c39672dddfdeeb23f0f"
 dependencies = [
  "async-trait",
  "clap",
@@ -4096,10 +4129,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "shipstern-core"
-version = "0.9.0"
+name = "shipstern-codama-from-anchor"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7d7e7976bf262d3fade7e5fe162de65acb56a1c8e6fa272c7e8c65379131899"
+checksum = "c9206a77fde442c77cfd9c6b91cf14b1908e9d19eaceab4e534c3a62fba4bf40"
+dependencies = [
+ "anchor-lang-idl",
+ "bs58",
+ "codama-nodes",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "shipstern-core"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a74114430dce3d633c85dd3b46f6718c74cb0b3a91cdaa9ec44505beab507d24"
 dependencies = [
  "base64",
  "borsh",
@@ -4112,22 +4161,22 @@ dependencies = [
 
 [[package]]
 name = "shipstern-parser"
-version = "0.9.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aefbd9a475d52de5bc764a3bda6d42fb6eb52542cba82f2bb0ad0d08363cb3c9"
+checksum = "b33601c387c6e0883899b23e4109d377c334044735d515f5b5c7519852740f5b"
 dependencies = [
  "base64",
  "bs58",
  "shipstern-core",
- "solana-pubkey 3.0.0",
+ "solana-pubkey 4.2.0",
  "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "shipstern-proc-macro"
-version = "0.9.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38df619f06e96a498f15d41d7f35774fec4aee9514cb2c5596484c6112959434"
+checksum = "1745aa2f2361b7befa93660bd3152292111c6baddc2370c373df3348d4910719"
 dependencies = [
  "base64",
  "bs58",
@@ -4137,24 +4186,25 @@ dependencies = [
  "quote",
  "serde",
  "serde_json",
+ "shipstern-codama-from-anchor",
  "shipstern-core",
  "syn",
 ]
 
 [[package]]
 name = "shipstern-slot-parser"
-version = "0.9.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b94e9732492b4016fd0fad52abdc55a01d58c5e0257182114741103339ea4b4e"
+checksum = "0168d9f1d8bca7b39791e835120ea49c8f4a4ab33c596d55048b84a12590c518"
 dependencies = [
  "shipstern-core",
 ]
 
 [[package]]
 name = "shipstern-spl-token-parser"
-version = "0.9.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2044d2d572f83dcfb4ff4b080681cec40159d22b1028ff70f99068f11583a94d"
+checksum = "ec9737a67befd455f9033011382458db7aba4fade7604e8d8610bdf7d20016a3"
 dependencies = [
  "bs58",
  "shipstern-core",
@@ -4168,9 +4218,9 @@ dependencies = [
 
 [[package]]
 name = "shipstern-yellowstone-grpc-source"
-version = "0.9.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75861da10fdcb292fc9f8fab93663d562da0d0fdf764e01e3e472adfc6f1b55f"
+checksum = "67d1df3d7a63206052ab7b8a44c6eac3ba0b215a45ce643c97732f91dd539620"
 dependencies = [
  "async-trait",
  "clap",
@@ -5104,8 +5154,11 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "async-trait",
+ "borsh",
  "serde",
  "shipstern-core",
+ "shipstern-parser",
+ "shipstern-proc-macro",
  "shipstern-spl-token-parser",
  "solana-account",
  "solana-account-decoder-client-types",
@@ -7125,7 +7178,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea61de684c3ea68cb082b7a88508a8b27fcc8b797d738bfc99a82facf1d752dc"
 dependencies = [
  "anyhow",
- "heck",
+ "heck 0.5.0",
  "wit-parser",
 ]
 
@@ -7136,7 +7189,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7c566e0f4b284dd6561c786d9cb0142da491f46a9fbed79ea69cdad5db17f21"
 dependencies = [
  "anyhow",
- "heck",
+ "heck 0.5.0",
  "indexmap 2.14.0",
  "prettyplease",
  "syn",
