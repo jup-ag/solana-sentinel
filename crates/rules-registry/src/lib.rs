@@ -32,9 +32,9 @@ pub use solana_sentinel::ProgramSpec;
 /// instruction enums and their `InstructionParser`, defined types and `PROGRAM_ID`.
 pub mod idl {
     pub use crate::squads::parser::squads_multisig_program as squads_v4;
-    pub use crate::stable_coin::parser::amm_v3 as raydium_clmm;
-    pub use crate::stable_coin::parser::meteora_dlmm;
-    pub use crate::stable_coin::parser::whirlpool as orca_whirlpool;
+    pub use crate::stable_coin::parser::{
+        amm_v3 as raydium_clmm, meteora_dlmm, whirlpool as orca_whirlpool,
+    };
 }
 
 /// Every program in the registry, for `RunOptions { programs: PROGRAMS, .. }`.
