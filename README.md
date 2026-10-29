@@ -202,3 +202,8 @@ make help                    # every other target
 - [`docs/arch.md`](docs/arch.md) — the design and full pipeline diagram.
 - [`examples/README.md`](examples/README.md) — a file-by-file tour of the example deployment.
 - [`config.example.toml`](config.example.toml) — every service setting, commented.
+
+## Contributors
+
+- [@Nagaprasadvr](https://github.com/Nagaprasadvr)
+- [@CanardMandarin](https://github.com/CanardMandarin)
