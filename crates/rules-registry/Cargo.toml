@@ -10,6 +10,8 @@ version.workspace = true
 solana-sentinel = { workspace = true }
 
 shipstern-core = { workspace = true }
+shipstern-parser = { workspace = true }
+shipstern-proc-macro = { workspace = true }
 shipstern-spl-token-parser = { workspace = true }
 solana-account = { workspace = true }
 solana-account-decoder-client-types = { workspace = true }
@@ -20,6 +22,7 @@ spl-token-interface = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+borsh = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
 

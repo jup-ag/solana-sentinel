@@ -14,7 +14,7 @@ use futures::future::try_join_all;
 use observability::slot_tracker::SlotTracker;
 use shipstern::config::{BufferConfig, ShipsternConfig};
 use shipstern::filter_pipeline::FilterPipeline;
-use shipstern::sources::FilterUpdateSource;
+use shipstern::sources::{FilterUpdateSource, FromConfig};
 use shipstern::{CommitmentLevel, Runtime};
 use shipstern_core::Prefilter;
 use shipstern_slot_parser::SlotParser;
@@ -153,12 +153,13 @@ struct Launch<'a> {
 }
 
 impl Launch<'_> {
-    fn run<S: FilterUpdateSource>(mut self, source: S::Config, buffer: &BufferSettings)
-    where
-        S::Config: Send,
-    {
+    fn run<S: FilterUpdateSource + FromConfig>(
+        mut self,
+        source: <S as FromConfig>::Config,
+        buffer: &BufferSettings,
+    ) {
         // Slot pipeline first: tracks the latest slot for observability and slot-lag rules.
-        let mut builder = Runtime::<S>::builder().slot(FilterPipeline::new(
+        let mut builder = Runtime::builder().slot(FilterPipeline::new(
             SlotParser,
             [self.slot_tracker.clone()],
             Prefilter::builder().slots(),
@@ -177,7 +178,7 @@ impl Launch<'_> {
         }
         info!(grpc_pipelines, "Stream pipelines installed");
 
-        let runtime = builder.build(ShipsternConfig {
+        let runtime = builder.build::<S>(ShipsternConfig {
             source,
             buffer: BufferConfig {
                 // One worker: rules that compare against last-seen state need
@@ -204,9 +205,7 @@ fn spawn_runtime<S: FilterUpdateSource>(
     runtime: Runtime<S>,
     cancel_token: CancellationToken,
     tracker: &TaskTracker,
-) where
-    S::Config: Send,
-{
+) {
     tracker.spawn(async move {
         tokio::select! {
             _ = cancel_token.cancelled() => info!("Cancellation requested; stopping consumer runtime"),
