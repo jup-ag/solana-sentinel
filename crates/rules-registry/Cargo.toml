@@ -23,6 +23,9 @@ spl-token-interface = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 borsh = { workspace = true }
+bs58 = { workspace = true }
+bytemuck = { workspace = true }
+parking_lot = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
 

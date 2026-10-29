@@ -110,6 +110,11 @@ async fn main() -> anyhow::Result<()> {
 | `wallet` | `unapproved_program_invoke` | a watched wallet signs a call into a non-allowlisted program |
 | `wallet` | `anchor_idl_instruction` | an Anchor IDL admin instruction hits a watched program |
 | `health` | `slot_lag` | the stream's slot and the RPC slot drift apart |
+| `pyth` | `oracle_staleness` | a Pyth feed has not published for longer than its threshold |
+| `pyth` | `reference_price_drift` | a Pyth feed's price leaves a band around a fixed reference price |
+| `stable_coin` | `depeg_monitor` | a stablecoin trades outside its peg band on a watched DEX pool |
+
+Generated IDL types (accounts, instructions, their parsers) are re-exported under `solana_sentinel_rules_registry::idl`.
 
 [`examples/registry-monitor/`](examples/registry-monitor/) activates every one of them with sample config:
 

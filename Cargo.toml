@@ -73,6 +73,7 @@ rustls = { version = "0.23", default-features = false, features = [
     "aws-lc-rs",
 ] }
 bs58 = "0.5.1"
+bytemuck = "1.25.0"
 futures = "0.3.32"
 url = { version = "2.5.4", features = ["serde"] }
 chrono = { version = "0.4.44", features = ["serde"] }
