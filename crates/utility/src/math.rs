@@ -8,6 +8,15 @@ pub fn ui_amount_to_token_amount(ui_amount: f64, decimals: u8) -> u64 {
     (ui_amount * multiplier).round() as u64
 }
 
+/// Oracle price as a float: `raw_price * 10^exponent`.
+pub fn to_ui_price(raw_price: i64, exponent: i32) -> f64 {
+    raw_price as f64 * 10f64.powi(exponent)
+}
+
+pub fn to_ui_price_compact(raw_price: i64, exponent: i32) -> String {
+    compact_amount(to_ui_price(raw_price, exponent))
+}
+
 const COMPACT_SUFFIXES: [&str; 5] = ["", "k", "M", "B", "T"];
 
 /// Render a UI value compactly: `53.2M`, `1.35B`, `947.5`. Decimal
