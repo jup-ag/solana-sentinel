@@ -551,8 +551,8 @@ fn metadata_table(a: &Alert) -> SlackBlock {
         a.metadata
             .iter()
             .take(TABLE_ROW_LIMIT.saturating_sub(1))
-            // skip tx_sig as it is already linked in the action buttons
-            .filter(|(k, _)| *k != "tx_sig")
+            // skip keys that are already linked in the action buttons
+            .filter(|(k, _)| !ACTION_ONLY_KEYS.contains(&k.as_str()))
             .map(|(k, v)| vec![TableCell::for_label(k), TableCell::for_value(v)]),
     );
 
@@ -583,6 +583,10 @@ fn explorer_tx_url(sig: &str) -> String {
     format!("{SOLSCAN_BASE}/tx/{sig}")
 }
 
+/// Metadata keys rendered as action buttons only, never as table rows: a raw
+/// signature or URL in a table cell is neither clickable nor readable.
+const ACTION_ONLY_KEYS: &[&str] = &["tx_sig", "squads_url"];
+
 /// Build action buttons from known metadata keys, if present.
 /// Adjust the keys to match what your `Alert` actually carries.
 fn build_actions(a: &Alert) -> Vec<ButtonElement> {
@@ -603,6 +607,16 @@ fn build_actions(a: &Alert) -> Vec<ButtonElement> {
             kind: "button",
             text: PlainText::new(":satellite_antenna: Oracle"),
             url: Some(explorer_address_url(oracle)),
+            style: None,
+        });
+    }
+
+    // Squads rules carry a ready-made web app link to the proposal's transaction.
+    if let Some(url) = a.metadata.get("squads_url") {
+        out.push(ButtonElement {
+            kind: "button",
+            text: PlainText::new(":ballot_box_with_check: Squads"),
+            url: Some(url.clone()),
             style: None,
         });
     }
