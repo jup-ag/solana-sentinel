@@ -7,44 +7,50 @@ It ingests account and transaction updates (Yellowstone gRPC, websocket, Kafka),
 ## How it works
 
 ```
-  ┌────────────────────────────────────────────────────────────────┐
-  │ ProgramSpec (one per program)                                  │
-  │ parsers · StreamRules · PollRules · ProgramDeps cache          │
-  └─────────────┬────────────────────────────────────┬─────────────┘
-                │                                    │ 
-                │ subscriptions                      │ accounts to poll
-                ▼                                    ▼
-  ┌───────────────────────────┐        ┌───────────────────────────┐
-  │ Stream source             │        │ PollSource                │
-  │ Yellowstone · ws · Kafka  │        │ RPC, on a timer           │
-  └─────────────┬─────────────┘        └─────────────┬─────────────┘
-                │                                    │
-                ▼ updates                            ▼ items
-         ┌─────────────┐                      ┌─────────────┐
-         │ StreamRules │                      │  PollRules  │
-         └──────┬──────┘                      └──────┬──────┘
-                └─────────────────┬──────────────────┘
-                                  │
-                                  ▼
-                  ┌──────────────────────────────┐
-                  │  evaluator: rule.evaluate()  │
-                  └───────────────┬──────────────┘
-                                  │
-                                  ▼ alerts
-                  ┌──────────────────────────────┐
-                  │ cooldown gate: local ▸ fleet │
-                  └───────────────┬──────────────┘
-                                  │
-                                  ▼
-                  ┌──────────────────────────────┐
-                  │  router: rule id → sink ids  │
-                  └───────────────┬──────────────┘
-                                  │
-                                  ▼
-            ┌───────────────────────────────────────────┐ 
-            │                   Sinks                   │  
-            │ stdout · Slack · Betterstack · ClickHouse │  
-            └───────────────────────────────────────────┘
+┌───────────────────────────────────────────────────┐
+│           ProgramSpec (one per program)           │
+│ ┌───────────────────┐       ┌───────────────────┐ │
+│ │      parsers      │       │ ProgramDeps cache │ │
+│ └───────────────────┘       └───────────────────┘ │
+│ ┌───────────────────┐       ┌───────────────────┐ │
+│ │    StreamRules    │       │     PollRules     │ │
+│ └───────────────────┘       └───────────────────┘ │
+└───────────┬───────────────────────────┬───────────┘
+            │                           │
+            │ subscriptions             │ accounts
+            ▼                           ▼ to poll
+┌───────────────────────┐   ┌───────────────────────┐
+│     Stream source     │   │      PollSource       │
+│   Yellowstone gRPC    │   │    RPC, on a timer    │
+│   websocket · Kafka   │   │                       │
+└───────────┬───────────┘   └───────────┬───────────┘
+            │                           │
+            ▼ updates                   ▼ items
+  ┌───────────────────┐       ┌───────────────────┐
+  │    StreamRules    │       │     PollRules     │
+  └─────────┬─────────┘       └─────────┬─────────┘
+            └─────────────┬─────────────┘
+                          │
+                          ▼
+    ┌───────────────────────────────────────────┐
+    │        evaluator: rule.evaluate()         │
+    └─────────────────────┬─────────────────────┘
+                          │
+                          ▼ alerts
+    ┌───────────────────────────────────────────┐
+    │       cooldown gate: local ▸ fleet        │
+    └─────────────────────┬─────────────────────┘
+                          │
+                          ▼
+    ┌───────────────────────────────────────────┐
+    │        router: rule id → sink ids         │
+    └─────────────────────┬─────────────────────┘
+                          │
+                          ▼
+    ┌───────────────────────────────────────────┐
+    │                   Sinks                   │
+    │ stdout · Slack · Betterstack · ClickHouse │
+    └───────────────────────────────────────────┘
 ```
 
 Each program crate exports a `ProgramSpec`. Its stream rules' subscriptions are merged into one filter set for the stream source, and its poll rules tell the `PollSource` which accounts to fetch. Alerts from both paths pass the cooldown gate (per node, then fleet-wide), and the router sends each one to the sinks named in the rules file. See [`docs/arch.md`](docs/arch.md) for the full design.
