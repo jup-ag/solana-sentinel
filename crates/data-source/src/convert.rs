@@ -5,10 +5,11 @@ use base64::Engine;
 use solana_account_decoder_client_types::UiAccount;
 use solana_message::VersionedMessage;
 use solana_pubkey::Pubkey;
+use solana_transaction::versioned::VersionedTransaction;
 use solana_transaction_status_client_types::option_serializer::OptionSerializer;
 use solana_transaction_status_client_types::{
-    EncodedTransactionWithStatusMeta, UiInnerInstructions, UiInstruction, UiTransactionStatusMeta,
-    UiTransactionTokenBalance,
+    EncodedTransaction, EncodedTransactionWithStatusMeta, TransactionBinaryEncoding,
+    UiInnerInstructions, UiInstruction, UiTransactionStatusMeta, UiTransactionTokenBalance,
 };
 use std::str::FromStr;
 use yellowstone_grpc_proto::geyser::{
@@ -17,8 +18,8 @@ use yellowstone_grpc_proto::geyser::{
 };
 use yellowstone_grpc_proto::solana::storage::confirmed_block::{
     CompiledInstruction, InnerInstruction, InnerInstructions, Message, MessageAddressTableLookup,
-    MessageHeader, TokenBalance, Transaction, TransactionError, TransactionStatusMeta,
-    UiTokenAmount,
+    MessageHeader, TokenBalance, Transaction, TransactionConfig, TransactionError,
+    TransactionStatusMeta, UiTokenAmount,
 };
 
 pub fn account_update(
@@ -56,7 +57,14 @@ pub fn transaction_update(
     signature: &[u8],
     tx: &EncodedTransactionWithStatusMeta,
 ) -> Option<ConvertedTransaction> {
-    let decoded = tx.transaction.decode()?;
+    // 3.x `decode()` can't read v1; this is what Agave 4.2 `decode()` does for base64.
+    let EncodedTransaction::Binary(blob, TransactionBinaryEncoding::Base64) = &tx.transaction
+    else {
+        return None;
+    };
+    let decoded = wincode::deserialize::<VersionedTransaction>(&decode_base64(blob)?)
+        .ok()
+        .filter(|t| t.sanitize().is_ok())?;
     let meta = tx.meta.as_ref();
     let failed = meta.is_some_and(|m| m.err.is_some());
 
@@ -78,6 +86,24 @@ pub fn transaction_update(
             true,
             m.address_table_lookups.clone(),
         ),
+        // V1 has no lookup tables; readers tell it from V0 by `config`.
+        VersionedMessage::V1(m) => (
+            m.header,
+            m.account_keys.clone(),
+            m.lifetime_specifier,
+            m.instructions.clone(),
+            true,
+            Vec::new(),
+        ),
+    };
+    let config = match &decoded.message {
+        VersionedMessage::V1(m) => Some(TransactionConfig {
+            priority_fee: m.config.priority_fee,
+            compute_unit_limit: m.config.compute_unit_limit,
+            loaded_accounts_data_size_limit: m.config.loaded_accounts_data_size_limit,
+            heap_size: m.config.heap_size,
+        }),
+        _ => None,
     };
 
     let (loaded_writable, loaded_readonly) = meta
@@ -119,7 +145,7 @@ pub fn transaction_update(
                 readonly_indexes: l.readonly_indexes.clone(),
             })
             .collect(),
-        ..Default::default()
+        config,
     };
 
     let status = meta.map(|m| status_meta(m, &loaded_writable, &loaded_readonly));
@@ -237,4 +263,53 @@ fn pubkeys(strs: &[String]) -> Vec<Pubkey> {
 /// Base64 data field as the PubSub `accountSubscribe` returns it; kept for callers that decode by hand.
 pub fn decode_base64(data: &str) -> Option<Vec<u8>> {
     STANDARD.decode(data).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Mainnet v1 transaction from slot 463813946, base64 as `getTransaction` returns it.
+    const V1_TX: &str = include_str!("../fixtures/convert/v1_tx.b64");
+
+    #[test]
+    fn v1_transaction_keeps_config_and_keys() {
+        let encoded = EncodedTransactionWithStatusMeta {
+            transaction: EncodedTransaction::Binary(
+                V1_TX.trim().to_string(),
+                TransactionBinaryEncoding::Base64,
+            ),
+            meta: None,
+            version: None,
+        };
+
+        let converted = transaction_update(463_813_946, &[0; 64], &encoded).unwrap();
+        let tx = converted
+            .update
+            .transaction
+            .and_then(|t| t.transaction)
+            .unwrap();
+        assert_eq!(
+            bs58::encode(&tx.signatures[0]).into_string(),
+            "2UumypDuYuaDiR5DEemwMPiANwxccWfPE9bCG8gnm1v5p2h4X6v5ejehCPBR8vidddWFyhAc9RuWWNTPfgEKMejx"
+        );
+
+        let message = tx.message.unwrap();
+        assert!(message.versioned);
+        assert!(message.address_table_lookups.is_empty());
+        assert_eq!(
+            bs58::encode(&message.recent_blockhash).into_string(),
+            "BCkvwySvKLq6kWNTtPgRAnkDYqcssVsof32NKAdRwkeC"
+        );
+        assert_eq!(
+            message.config,
+            Some(TransactionConfig {
+                priority_fee: Some(2_777),
+                compute_unit_limit: Some(277_696),
+                loaded_accounts_data_size_limit: Some(67_108_864),
+                heap_size: None,
+            })
+        );
+        assert_eq!(converted.account_keys.len(), 44);
+    }
 }
