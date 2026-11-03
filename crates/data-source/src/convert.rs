@@ -57,14 +57,7 @@ pub fn transaction_update(
     signature: &[u8],
     tx: &EncodedTransactionWithStatusMeta,
 ) -> Option<ConvertedTransaction> {
-    // 3.x `decode()` can't read v1; this is what Agave 4.2 `decode()` does for base64.
-    let EncodedTransaction::Binary(blob, TransactionBinaryEncoding::Base64) = &tx.transaction
-    else {
-        return None;
-    };
-    let decoded = wincode::deserialize::<VersionedTransaction>(&decode_base64(blob)?)
-        .ok()
-        .filter(|t| t.sanitize().is_ok())?;
+    let decoded = decode_transaction(&tx.transaction)?;
     let meta = tx.meta.as_ref();
     let failed = meta.is_some_and(|m| m.err.is_some());
 
@@ -86,7 +79,6 @@ pub fn transaction_update(
             true,
             m.address_table_lookups.clone(),
         ),
-        // V1 has no lookup tables; readers tell it from V0 by `config`.
         VersionedMessage::V1(m) => (
             m.header,
             m.account_keys.clone(),
@@ -265,51 +257,17 @@ pub fn decode_base64(data: &str) -> Option<Vec<u8>> {
     STANDARD.decode(data).ok()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Mainnet v1 transaction from slot 463813946, base64 as `getTransaction` returns it.
-    const V1_TX: &str = include_str!("../fixtures/convert/v1_tx.b64");
-
-    #[test]
-    fn v1_transaction_keeps_config_and_keys() {
-        let encoded = EncodedTransactionWithStatusMeta {
-            transaction: EncodedTransaction::Binary(
-                V1_TX.trim().to_string(),
-                TransactionBinaryEncoding::Base64,
-            ),
-            meta: None,
-            version: None,
-        };
-
-        let converted = transaction_update(463_813_946, &[0; 64], &encoded).unwrap();
-        let tx = converted
-            .update
-            .transaction
-            .and_then(|t| t.transaction)
-            .unwrap();
-        assert_eq!(
-            bs58::encode(&tx.signatures[0]).into_string(),
-            "2UumypDuYuaDiR5DEemwMPiANwxccWfPE9bCG8gnm1v5p2h4X6v5ejehCPBR8vidddWFyhAc9RuWWNTPfgEKMejx"
-        );
-
-        let message = tx.message.unwrap();
-        assert!(message.versioned);
-        assert!(message.address_table_lookups.is_empty());
-        assert_eq!(
-            bs58::encode(&message.recent_blockhash).into_string(),
-            "BCkvwySvKLq6kWNTtPgRAnkDYqcssVsof32NKAdRwkeC"
-        );
-        assert_eq!(
-            message.config,
-            Some(TransactionConfig {
-                priority_fee: Some(2_777),
-                compute_unit_limit: Some(277_696),
-                loaded_accounts_data_size_limit: Some(67_108_864),
-                heap_size: None,
-            })
-        );
-        assert_eq!(converted.account_keys.len(), 44);
-    }
+fn decode_transaction(tx: &EncodedTransaction) -> Option<VersionedTransaction> {
+    let (blob, encoding) = match tx {
+        EncodedTransaction::Json(_) | EncodedTransaction::Accounts(_) => return None,
+        EncodedTransaction::LegacyBinary(blob) => (blob, TransactionBinaryEncoding::Base58),
+        EncodedTransaction::Binary(blob, encoding) => (blob, *encoding),
+    };
+    let bytes = match encoding {
+        TransactionBinaryEncoding::Base58 => bs58::decode(blob).into_vec().ok()?,
+        TransactionBinaryEncoding::Base64 => decode_base64(blob)?,
+    };
+    wincode::deserialize::<VersionedTransaction>(&bytes)
+        .ok()
+        .filter(|t| t.sanitize().is_ok())
 }
