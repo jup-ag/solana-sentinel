@@ -27,6 +27,7 @@ pub struct SlotLagConfig {
 pub struct SlotLag {
     threshold_slots: u64,
     grpc_slot: GrpcSlotReader,
+    pod_id: String,
 }
 
 impl PollRule for SlotLag {
@@ -46,9 +47,11 @@ impl PollRule for SlotLag {
     }
 
     fn build(cfg: Self::Config, deps: &Deps) -> anyhow::Result<Self> {
+        let health = deps.get::<HealthDeps>()?;
         Ok(Self {
             threshold_slots: cfg.threshold_slots,
-            grpc_slot: deps.get::<HealthDeps>()?.grpc_slot.clone(),
+            grpc_slot: health.grpc_slot.clone(),
+            pod_id: health.pod_id.clone(),
         })
     }
 
@@ -80,9 +83,10 @@ impl PollRule for SlotLag {
                 .meta("rpc_slot", rpc_slot)
                 .meta("slot_diff", diff)
                 .meta("direction", direction)
-                .key([grpc_slot])
-                // Lag is a per-node condition; the slot scope keeps other nodes' alerts distinct.
-                .scope(DedupScope::Slot(grpc_slot))
+                .meta("node", &self.pod_id)
+                // Lag is per-node and ongoing: one key per node and direction while it lasts.
+                .key([self.pod_id.as_str(), direction])
+                .scope(DedupScope::Monitor)
                 .build(),
         )
     }

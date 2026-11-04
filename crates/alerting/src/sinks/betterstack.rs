@@ -3,13 +3,47 @@ use async_trait::async_trait;
 use domain::alert::{Alert, Severity};
 use domain::sinks::SinkId;
 use reqwest::Client;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::Duration;
-use tracing::warn;
+use tracing::{info, warn};
 use url::Url;
 
 pub const BETTERSTACK_SINK_ID: &str = "betterstack";
+
+/// Metadata key carrying the alert's fleet dedup key, used to find an open incident for it.
+pub const DEDUP_METADATA_KEY: &str = "sentinel_dedup_key";
+
+#[derive(Debug, Deserialize)]
+struct IncidentList {
+    data: Vec<serde_json::Value>,
+}
+
+/// Whether BetterStack has an unresolved incident tagged with `dedup_key`.
+async fn has_open_incident(
+    http_client: &Client,
+    url: &Url,
+    auth_token: &str,
+    dedup_key: &str,
+) -> anyhow::Result<bool> {
+    let metadata_filter = format!("metadata[{DEDUP_METADATA_KEY}][][value]");
+    let resp = http_client
+        .get(url.clone())
+        .bearer_auth(auth_token)
+        .query(&[
+            ("resolved", "false"),
+            ("per_page", "1"),
+            (metadata_filter.as_str(), dedup_key),
+        ])
+        .send()
+        .await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("BetterStack incident lookup failed: HTTP {status}: {text}");
+    }
+    Ok(!resp.json::<IncidentList>().await?.data.is_empty())
+}
 
 /// Per-incident data. The common fields (`requester_email`, `policy_id`) are
 /// supplied once by the reporter via `BetterstackIncident`, not here.
@@ -148,11 +182,13 @@ impl BetterstackSink {
 
     /// Map a domain `Alert` into a BetterStack incident payload.
     fn payload_from_alert(alert: Alert) -> IncidentPayload {
+        let mut metadata = alert.metadata;
+        metadata.insert(DEDUP_METADATA_KEY.into(), alert.fleet_gate_key.to_string());
         IncidentPayload::new(
             alert.rule.to_string(), // name: rule identity
             alert.message.clone(),  // summary: the human message
             alert.severity,         // severity: warning or critical
-            alert.metadata,
+            metadata,
         )
     }
 }
@@ -164,6 +200,23 @@ impl AlertSink for BetterstackSink {
     }
 
     async fn send(&self, alert: &Alert) -> Result<(), AlertSinkError> {
+        let dedup_key = alert.fleet_gate_key.to_string();
+        // Fail open: a failed lookup still creates the incident rather than dropping a page.
+        match has_open_incident(
+            &self.client,
+            &self.incident_api_url,
+            &self.incident_auth_token,
+            &dedup_key,
+        )
+        .await
+        {
+            Ok(true) => {
+                info!(rule = %alert.rule, %dedup_key, "BetterStack incident already open, skipping");
+                return Ok(());
+            }
+            Ok(false) => {}
+            Err(err) => warn!(error = %err, %dedup_key, "BetterStack open-incident check failed"),
+        }
         let payload = Self::payload_from_alert(alert.clone());
         report_incident(
             payload,

@@ -19,6 +19,7 @@ pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(120);
 #[derive(Debug, Clone)]
 pub struct HealthDeps {
     pub grpc_slot: GrpcSlotReader,
+    pub pod_id: String,
 }
 
 #[async_trait]
@@ -26,6 +27,7 @@ impl ProgramDeps for HealthDeps {
     async fn bootstrap(ctx: &BootstrapCtx) -> anyhow::Result<Self> {
         Ok(Self {
             grpc_slot: ctx.grpc_slot.clone(),
+            pod_id: ctx.pod_id.clone(),
         })
     }
 }

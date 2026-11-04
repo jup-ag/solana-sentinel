@@ -55,6 +55,8 @@ pub struct BootstrapCtx {
     pub rpc: Arc<RpcClient>,
     /// Last slot seen on the gRPC stream; `None` until the stream is live.
     pub grpc_slot: GrpcSlotReader,
+    /// This node's identity (the pod hostname), for rules whose condition is per-node.
+    pub pod_id: String,
 }
 
 /// Raw per-rule config payloads keyed by rule name, straight from `rules.toml`.

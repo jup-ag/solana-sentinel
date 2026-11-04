@@ -35,6 +35,7 @@ pub struct ConsumerService {
     cancel_token: CancellationToken,
     rpc: Arc<RpcClient>,
     slot_tracker: SlotTracker,
+    pod_id: String,
 }
 
 impl ConsumerService {
@@ -45,6 +46,7 @@ impl ConsumerService {
         cancel_token: CancellationToken,
         rpc: Arc<RpcClient>,
         slot_tracker: SlotTracker,
+        pod_id: String,
     ) -> Self {
         Self {
             config: Arc::clone(config),
@@ -53,6 +55,7 @@ impl ConsumerService {
             cancel_token,
             rpc,
             slot_tracker,
+            pod_id,
         }
     }
 
@@ -66,6 +69,7 @@ impl ConsumerService {
             cancel_token,
             rpc,
             slot_tracker,
+            pod_id,
         } = self;
 
         if programs.is_empty() {
@@ -81,6 +85,7 @@ impl ConsumerService {
             bootstrap: BootstrapCtx {
                 rpc,
                 grpc_slot: slot_tracker.reader(),
+                pod_id,
             },
             alerts_tx,
             cancel_token: cancel_token.clone(),

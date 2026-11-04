@@ -96,6 +96,7 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
         cancel_token.clone(),
         Arc::clone(&rpc),
         slot_tracker.clone(),
+        pod_id.clone(),
     );
     consumer_service.start(&tracker).await?;
 
