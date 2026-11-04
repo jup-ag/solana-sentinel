@@ -14,6 +14,10 @@ pub const BETTERSTACK_SINK_ID: &str = "betterstack";
 /// Metadata key carrying the alert's fleet dedup key, used to find an open incident for it.
 pub const DEDUP_METADATA_KEY: &str = "sentinel_dedup_key";
 
+/// Caps the open-incident lookup (send + body) well under the 5s flush deadline,
+/// so a stalled GET still leaves time to create the incident.
+const LOOKUP_TIMEOUT: Duration = Duration::from_millis(1500);
+
 #[derive(Debug, Deserialize)]
 struct IncidentList {
     data: Vec<serde_json::Value>,
@@ -180,10 +184,16 @@ impl BetterstackSink {
         })
     }
 
+    /// Dedup key scoped to this sink's escalation policy, so an incident open under
+    /// one policy doesn't suppress paging a different one.
+    fn dedup_key(&self, alert: &Alert) -> String {
+        format!("{}:{}", self.escalation_policy_id, alert.fleet_gate_key)
+    }
+
     /// Map a domain `Alert` into a BetterStack incident payload.
-    fn payload_from_alert(alert: Alert) -> IncidentPayload {
+    fn payload_from_alert(alert: Alert, dedup_key: String) -> IncidentPayload {
         let mut metadata = alert.metadata;
-        metadata.insert(DEDUP_METADATA_KEY.into(), alert.fleet_gate_key.to_string());
+        metadata.insert(DEDUP_METADATA_KEY.into(), dedup_key);
         IncidentPayload::new(
             alert.rule.to_string(), // name: rule identity
             alert.message.clone(),  // summary: the human message
@@ -200,16 +210,20 @@ impl AlertSink for BetterstackSink {
     }
 
     async fn send(&self, alert: &Alert) -> Result<(), AlertSinkError> {
-        let dedup_key = alert.fleet_gate_key.to_string();
-        // Fail open: a failed lookup still creates the incident rather than dropping a page.
-        match has_open_incident(
-            &self.client,
-            &self.incident_api_url,
-            &self.incident_auth_token,
-            &dedup_key,
+        let dedup_key = self.dedup_key(alert);
+        // Fail open: a failed or timed-out lookup still creates the incident.
+        let lookup = tokio::time::timeout(
+            LOOKUP_TIMEOUT,
+            has_open_incident(
+                &self.client,
+                &self.incident_api_url,
+                &self.incident_auth_token,
+                &dedup_key,
+            ),
         )
         .await
-        {
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("lookup timed out after {LOOKUP_TIMEOUT:?}")));
+        match lookup {
             Ok(true) => {
                 info!(rule = %alert.rule, %dedup_key, "BetterStack incident already open, skipping");
                 return Ok(());
@@ -217,7 +231,7 @@ impl AlertSink for BetterstackSink {
             Ok(false) => {}
             Err(err) => warn!(error = %err, %dedup_key, "BetterStack open-incident check failed"),
         }
-        let payload = Self::payload_from_alert(alert.clone());
+        let payload = Self::payload_from_alert(alert.clone(), dedup_key);
         report_incident(
             payload,
             &self.client,
