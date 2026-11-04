@@ -112,7 +112,10 @@ impl ConsumerService {
                 if !c.auto_reconnect {
                     // yellowstone-grpc-client 13.x runs dedup with slot retention 0 when reconnect
                     // is off and never prunes sealed slots: memory grows ~60 MB/day until OOM.
-                    warn!("auto_reconnect = false leaks memory in the gRPC client; keep it on in production");
+                    warn!(
+                        "auto_reconnect = false leaks memory in the gRPC client; keep it on in \
+                         production"
+                    );
                 }
                 launch.run::<YellowstoneGrpcSource>(
                     YellowstoneGrpcConfig {

@@ -166,14 +166,18 @@ impl SlotTracker {
         let rpc_slot = match fetch_latest_slot_with_retry(rpc).await {
             Ok(slot) => slot,
             Err(e) => {
-                warn!("Failed to fetch latest slot from RPC ({e}); using checkpoint {checkpoint_slot} unchecked");
+                warn!(
+                    "Failed to fetch latest slot from RPC ({e}); using checkpoint \
+                     {checkpoint_slot} unchecked"
+                );
                 return Ok(LastSeenGrpcSlot::seeded(checkpoint_slot));
             }
         };
 
         if rpc_slot < checkpoint_slot {
             warn!(
-                "Checkpoint slot {} is ahead of the latest RPC slot {}; RPC is lagging, using checkpoint",
+                "Checkpoint slot {} is ahead of the latest RPC slot {}; RPC is lagging, using \
+                 checkpoint",
                 checkpoint_slot, rpc_slot
             );
             return Ok(LastSeenGrpcSlot::seeded(checkpoint_slot));

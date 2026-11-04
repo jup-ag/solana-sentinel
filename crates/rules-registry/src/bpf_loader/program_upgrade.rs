@@ -58,7 +58,8 @@ impl StreamRule for ProgramUpgrade {
             Alert::for_rule(Self::ID)
                 .severity(Severity::Warn)
                 .message(format!(
-                    "Program {program_id} upgraded at slot {} (previous upgrade slot {previous_label})",
+                    "Program {program_id} upgraded at slot {} (previous upgrade slot \
+                     {previous_label})",
                     pd.last_upgrade_slot
                 ))
                 .meta("program_id", program_id)
