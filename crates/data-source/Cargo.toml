@@ -30,7 +30,6 @@ solana-account-decoder-client-types = { workspace = true }
 solana-commitment-config = "3.1"
 solana-signature = "3.1"
 solana-transaction-status-client-types = "3.1"
-# v1 decode on wincode 0.5; solana-message 4.4.0 or 4.5+ pull in 0.6 and break the build.
 solana-message = "~4.4.1"
 solana-transaction = { version = "~4.1", features = ["wincode"] }
 wincode = "0.5"
