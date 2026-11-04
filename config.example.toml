@@ -113,7 +113,7 @@ timeout_seconds = 10
 [[sinks]]
 type = "betterstack"
 id = "betterstack"
-incident_api_url = "https://betterstack.com/api/v1/incidents/REPLACE_ME"
+incident_api_url = "https://incidents.betterstack.com/api/v3/incidents"
 incident_auth_token = "REPLACE_ME"
 escalation_policy_id = "REPLACE_ME"
 requester_email = "REPLACE_ME"
