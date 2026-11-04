@@ -357,11 +357,17 @@ impl WebsocketSource {
         let config = RpcTransactionConfig {
             encoding: Some(UiTransactionEncoding::Base64),
             commitment: Some(commitment),
-            max_supported_transaction_version: Some(0),
+            max_supported_transaction_version: Some(1),
         };
         for attempt in 1..=TX_FETCH_ATTEMPTS {
             match self.rpc.get_transaction_with_config(&sig, config).await {
-                Ok(tx) => return transaction_update(tx.slot, sig.as_ref(), &tx.transaction),
+                Ok(tx) => {
+                    let converted = transaction_update(tx.slot, sig.as_ref(), &tx.transaction);
+                    if converted.is_none() {
+                        warn!(%signature, "transaction decode failed; transaction dropped");
+                    }
+                    return converted;
+                }
                 Err(e) if attempt < TX_FETCH_ATTEMPTS => {
                     debug!(%signature, attempt, error = %e, "getTransaction not ready; retrying");
                     tokio::time::sleep(TX_FETCH_BACKOFF * attempt).await;

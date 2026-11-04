@@ -5,10 +5,11 @@ use base64::Engine;
 use solana_account_decoder_client_types::UiAccount;
 use solana_message::VersionedMessage;
 use solana_pubkey::Pubkey;
+use solana_transaction::versioned::VersionedTransaction;
 use solana_transaction_status_client_types::option_serializer::OptionSerializer;
 use solana_transaction_status_client_types::{
-    EncodedTransactionWithStatusMeta, UiInnerInstructions, UiInstruction, UiTransactionStatusMeta,
-    UiTransactionTokenBalance,
+    EncodedTransaction, EncodedTransactionWithStatusMeta, TransactionBinaryEncoding,
+    UiInnerInstructions, UiInstruction, UiTransactionStatusMeta, UiTransactionTokenBalance,
 };
 use std::str::FromStr;
 use yellowstone_grpc_proto::geyser::{
@@ -17,8 +18,8 @@ use yellowstone_grpc_proto::geyser::{
 };
 use yellowstone_grpc_proto::solana::storage::confirmed_block::{
     CompiledInstruction, InnerInstruction, InnerInstructions, Message, MessageAddressTableLookup,
-    MessageHeader, TokenBalance, Transaction, TransactionError, TransactionStatusMeta,
-    UiTokenAmount,
+    MessageHeader, TokenBalance, Transaction, TransactionConfig, TransactionError,
+    TransactionStatusMeta, UiTokenAmount,
 };
 
 pub fn account_update(
@@ -56,7 +57,7 @@ pub fn transaction_update(
     signature: &[u8],
     tx: &EncodedTransactionWithStatusMeta,
 ) -> Option<ConvertedTransaction> {
-    let decoded = tx.transaction.decode()?;
+    let decoded = decode_transaction(&tx.transaction)?;
     let meta = tx.meta.as_ref();
     let failed = meta.is_some_and(|m| m.err.is_some());
 
@@ -78,6 +79,23 @@ pub fn transaction_update(
             true,
             m.address_table_lookups.clone(),
         ),
+        VersionedMessage::V1(m) => (
+            m.header,
+            m.account_keys.clone(),
+            m.lifetime_specifier,
+            m.instructions.clone(),
+            true,
+            Vec::new(),
+        ),
+    };
+    let config = match &decoded.message {
+        VersionedMessage::V1(m) => Some(TransactionConfig {
+            priority_fee: m.config.priority_fee,
+            compute_unit_limit: m.config.compute_unit_limit,
+            loaded_accounts_data_size_limit: m.config.loaded_accounts_data_size_limit,
+            heap_size: m.config.heap_size,
+        }),
+        _ => None,
     };
 
     let (loaded_writable, loaded_readonly) = meta
@@ -119,7 +137,7 @@ pub fn transaction_update(
                 readonly_indexes: l.readonly_indexes.clone(),
             })
             .collect(),
-        ..Default::default()
+        config,
     };
 
     let status = meta.map(|m| status_meta(m, &loaded_writable, &loaded_readonly));
@@ -237,4 +255,19 @@ fn pubkeys(strs: &[String]) -> Vec<Pubkey> {
 /// Base64 data field as the PubSub `accountSubscribe` returns it; kept for callers that decode by hand.
 pub fn decode_base64(data: &str) -> Option<Vec<u8>> {
     STANDARD.decode(data).ok()
+}
+
+fn decode_transaction(tx: &EncodedTransaction) -> Option<VersionedTransaction> {
+    let (blob, encoding) = match tx {
+        EncodedTransaction::Json(_) | EncodedTransaction::Accounts(_) => return None,
+        EncodedTransaction::LegacyBinary(blob) => (blob, TransactionBinaryEncoding::Base58),
+        EncodedTransaction::Binary(blob, encoding) => (blob, *encoding),
+    };
+    let bytes = match encoding {
+        TransactionBinaryEncoding::Base58 => bs58::decode(blob).into_vec().ok()?,
+        TransactionBinaryEncoding::Base64 => decode_base64(blob)?,
+    };
+    wincode::deserialize::<VersionedTransaction>(&bytes)
+        .ok()
+        .filter(|t| t.sanitize().is_ok())
 }

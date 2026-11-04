@@ -27,10 +27,12 @@ solana-pubsub-client = "3.1"
 solana-rpc-client = { workspace = true }
 solana-rpc-client-api = "3.1"
 solana-account-decoder-client-types = { workspace = true }
-solana-message = "3.1"
 solana-commitment-config = "3.1"
 solana-signature = "3.1"
 solana-transaction-status-client-types = "3.1"
+solana-message = "~4.4.1"
+solana-transaction = { version = "~4.1", features = ["wincode"] }
+wincode = "0.5"
 
 [lints]
 workspace = true
