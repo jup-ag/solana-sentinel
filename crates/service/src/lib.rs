@@ -7,6 +7,7 @@ mod utils;
 pub mod validate;
 pub mod wiring;
 
+use crate::config::service::DataSourceConfig;
 use crate::config::SentinelConfig;
 use crate::consumer::ConsumerService;
 use crate::utils::{connect_to_redis, extract_pod_id, wait_for_shutdown_signal, ShutdownReason};
@@ -82,8 +83,20 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
         &pod_id,
         cancel_token.clone(),
         &tracker,
+        matches!(config.data_source(), DataSourceConfig::YellowstoneGrpc(_)),
     )
     .await?;
+
+    // Up before bootstrap, so a slow RPC warm-up doesn't fail the liveness probe;
+    // a stream that never delivers is caught by the slot tracker's stall watchdog.
+    let observability = config.observability();
+    run_observability_stack(
+        &slot_tracker,
+        observability.server.bind_addr,
+        observability.heartbeat(),
+        cancel_token.clone(),
+        &tracker,
+    );
 
     // alerts channel to send alerts from the consumer service to the alerting service(clickhouse, slack and betterstack sinks)
     let (alerts_tx, alerts_rx) = mpsc::channel(1024);
@@ -99,16 +112,6 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
         pod_id.clone(),
     );
     consumer_service.start(&tracker).await?;
-
-    // Start the observability stack: metrics / health HTTP server and the optional heartbeat.
-    let observability = config.observability();
-    run_observability_stack(
-        &slot_tracker,
-        observability.server.bind_addr,
-        observability.heartbeat(),
-        cancel_token.clone(),
-        &tracker,
-    );
 
     // Start the alerting service and send alerts to the clickhouse and slack sinks
     let alerting_service =

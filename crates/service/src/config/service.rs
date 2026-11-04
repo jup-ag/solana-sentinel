@@ -78,6 +78,10 @@ pub struct YellowstoneGrpcSourceConfig {
     /// Client-side reconnect with slot replay and dedup (default on).
     #[serde(default = "defaults::auto_reconnect")]
     pub auto_reconnect: bool,
+    /// Largest gRPC message accepted. Unbounded, a backlog of large accounts (ProgramData)
+    /// in the source channel can exhaust the pod's memory.
+    #[serde(default = "defaults::max_decoding_message_size")]
+    pub max_decoding_message_size: usize,
     #[serde(flatten)]
     pub buffer: BufferSettings,
 }
@@ -154,10 +158,6 @@ pub struct ClickhouseConfig {
     pub password: String,
     #[serde(default = "defaults::clickhouse_database")]
     pub database: String,
-    #[serde(default = "defaults::clickhouse_batch_size")]
-    pub batch_size: usize,
-    #[serde(default = "defaults::clickhouse_flush_interval_ms")]
-    pub flush_interval_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -232,8 +232,14 @@ mod defaults {
     pub fn auto_reconnect() -> bool {
         true
     }
+    // The channel is bounded by count, not bytes: 10k updates of large accounts is
+    // already gigabytes, so keep it small and let the stream apply backpressure.
     pub fn sources_channel_size() -> usize {
-        50_000
+        10_000
+    }
+    // Above the 10 MiB account size limit plus framing.
+    pub fn max_decoding_message_size() -> usize {
+        16 * 1024 * 1024
     }
 
     pub fn clickhouse_user() -> String {
@@ -241,12 +247,6 @@ mod defaults {
     }
     pub fn clickhouse_database() -> String {
         "default".into()
-    }
-    pub fn clickhouse_batch_size() -> usize {
-        100
-    }
-    pub fn clickhouse_flush_interval_ms() -> u64 {
-        5_000
     }
 
     pub fn slack_timeout_seconds() -> u64 {

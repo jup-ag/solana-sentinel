@@ -44,7 +44,7 @@ impl StreamRule for UpgradeAuthorityChange {
         let program_id = self.program_ids.get(&pd.address)?;
         let previous = self
             .last
-            .replace(Self::ID, pd.address, pd.clone())?
+            .replace(Self::ID, pd.address, pd.clone(), ctx.slot)?
             .upgrade_authority;
         let current = pd.upgrade_authority;
         if previous == current {

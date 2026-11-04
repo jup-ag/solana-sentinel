@@ -5152,6 +5152,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "axum",
+ "parking_lot",
  "prometheus",
  "redis",
  "reqwest",
@@ -5159,6 +5160,7 @@ dependencies = [
  "shipstern",
  "shipstern-core",
  "solana-rpc-client",
+ "solana-sentinel-domain",
  "tokio",
  "tokio-util",
  "tracing",

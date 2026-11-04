@@ -28,10 +28,11 @@ pub fn spec() -> ProgramSpec {
 pub async fn fetch_mints(
     rpc: &RpcClient,
     mints: &[Pubkey],
-) -> anyhow::Result<HashMap<Pubkey, Mint>> {
-    let (fetched, _slot) = try_fetch_accounts_with_slot(rpc, mints, None).await?;
-    Ok(fetched
+) -> anyhow::Result<(HashMap<Pubkey, Mint>, u64)> {
+    let (fetched, slot) = try_fetch_accounts_with_slot(rpc, mints, None).await?;
+    let mints = fetched
         .iter()
         .filter_map(|(pubkey, account)| Some((*pubkey, Mint::unpack(&account.data).ok()?)))
-        .collect())
+        .collect();
+    Ok((mints, slot))
 }

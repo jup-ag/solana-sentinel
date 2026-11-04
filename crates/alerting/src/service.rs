@@ -8,12 +8,17 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 const DEFAULT_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 const DEFAULT_BUFFER_CAPACITY: usize = 1024;
 const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
-const SINK_DELIVERY_TIMEOUT: Duration = Duration::from_secs(5);
+// Per alert, not per batch: Slack posts one at a time with its own 10s timeout and retries,
+// so a flat 5s cut every burst after the first alert. Capped so a dead sink can't stall the loop.
+const SINK_DELIVERY_TIMEOUT_PER_ALERT: Duration = Duration::from_secs(15);
+const SINK_DELIVERY_TIMEOUT_MAX: Duration = Duration::from_secs(60);
+// Failed deliveries are retried on the next flush ticks, then given up.
+const MAX_DELIVERY_ATTEMPTS: u32 = 3;
 
 pub struct AlertingService {
     router: Router,
@@ -71,7 +76,7 @@ impl AlertingService {
                 "Starting alerting service",
             );
 
-            let mut buffer: Vec<Alert> = Vec::with_capacity(buffer_capacity);
+            let mut buffer: Vec<Pending> = Vec::with_capacity(buffer_capacity);
             let mut flush_tick = tokio::time::interval(flush_interval);
             flush_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             flush_tick.tick().await; // consume the immediate first tick
@@ -86,13 +91,9 @@ impl AlertingService {
                     maybe_alert = alerts_rx.recv() => {
                         match maybe_alert {
                             Some(alert) => {
-                                if !cooldown_gate.should_send(&alert).await {
-                                    continue;
-                                }
-                                record_alert(alert.severity);
-                                buffer.push(alert);
+                                Self::admit(&router, &mut cooldown_gate, &mut buffer, alert).await;
                                 if buffer.len() >= buffer_capacity {
-                                    Self::flush(&router, &mut buffer).await;
+                                    Self::flush(&router, &mut cooldown_gate, &mut buffer, MAX_DELIVERY_ATTEMPTS).await;
                                 }
                             }
                             None => {
@@ -104,27 +105,21 @@ impl AlertingService {
 
                     _ = flush_tick.tick() => {
                         if !buffer.is_empty() {
-                            Self::flush(&router, &mut buffer).await;
+                            Self::flush(&router, &mut cooldown_gate, &mut buffer, MAX_DELIVERY_ATTEMPTS).await;
                         }
                     }
                 }
             }
 
-            // Drain remaining channel contents, then flush once with a hard cap.
-            while let Ok(alert) = alerts_rx.try_recv() {
-                if !cooldown_gate.should_send(&alert).await {
-                    continue;
+            // Drain the channel and make one last attempt; the gate calls hit Redis, so the
+            // whole drain shares the cap. A claim left open is taken over by the next run.
+            let drain = async {
+                while let Ok(alert) = alerts_rx.try_recv() {
+                    Self::admit(&router, &mut cooldown_gate, &mut buffer, alert).await;
                 }
-                record_alert(alert.severity);
-                buffer.push(alert);
-            }
-
-            let timed_out =
-                tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, Self::flush(&router, &mut buffer))
-                    .await
-                    .is_err();
-
-            if !buffer.is_empty() && timed_out {
+                Self::flush(&router, &mut cooldown_gate, &mut buffer, 1).await;
+            };
+            if tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, drain).await.is_err() {
                 warn!("Shutdown drain exceeded timeout; alerts may be lost");
             }
 
@@ -132,64 +127,209 @@ impl AlertingService {
         });
     }
 
-    async fn flush(router: &Router, buffer: &mut Vec<Alert>) {
+    /// Gate the alert and queue it for every sink its rule routes to.
+    async fn admit(
+        router: &Router,
+        gate: &mut CooldownGate,
+        buffer: &mut Vec<Pending>,
+        alert: Alert,
+    ) {
+        if !gate.should_send(&alert).await {
+            return;
+        }
+        let sinks = router.route(alert.rule).to_vec();
+        if sinks.is_empty() {
+            warn!(rule = alert.rule.name, "Alert dropped: no matching route");
+            gate.release(&alert).await;
+            return;
+        }
+        record_alert(alert.severity);
+        buffer.push(Pending {
+            alert,
+            sinks,
+            attempts: 0,
+            delivered: false,
+        });
+    }
+
+    /// One delivery attempt for everything buffered. Alerts still owed to a sink stay
+    /// buffered for the next flush until `max_attempts`; then their claims are settled.
+    async fn flush(
+        router: &Router,
+        gate: &mut CooldownGate,
+        buffer: &mut Vec<Pending>,
+        max_attempts: u32,
+    ) {
         if buffer.is_empty() {
             return;
         }
 
-        // Bucket alerts by destination sink.
-        let mut per_sink: HashMap<SinkId, Vec<Alert>> = HashMap::new();
-        let mut unrouted = 0usize;
-
-        for alert in buffer.drain(..) {
-            let targets = router.route(alert.rule);
-            if targets.is_empty() {
-                unrouted += 1;
-                continue;
+        let mut per_sink: HashMap<&SinkId, Vec<usize>> = HashMap::new();
+        for (i, pending) in buffer.iter().enumerate() {
+            for sink in &pending.sinks {
+                per_sink.entry(sink).or_default().push(i);
             }
-            // Move alert to the last target, clone for the rest.
-            let Some((last, rest)) = targets.split_last() else {
-                continue;
-            };
-
-            for sink_id in rest {
-                per_sink
-                    .entry(sink_id.clone())
-                    .or_default()
-                    .push(alert.clone());
-            }
-
-            per_sink.entry(last.clone()).or_default().push(alert);
-        }
-
-        if unrouted > 0 {
-            warn!(count = unrouted, "Alerts dropped: no matching route");
         }
 
         // Dispatch per-sink batches concurrently.
-        let futures = per_sink.into_iter().map(|(sink_id, batch)| async move {
-            let Some(sink) = router.sink(&sink_id) else {
-                warn!(sink = %sink_id, "Route references unconfigured sink");
-                return;
-            };
-            let count = batch.len();
-
-            tokio::time::timeout(SINK_DELIVERY_TIMEOUT, async {
-                if let Err(e) = sink.send_batch(&batch).await {
-                    warn!(
-                        sink = %sink_id,
-                        error = %e,
-                        batch_len = count,
-                        "Failed to deliver alerts to sink"
-                    );
-                }
-            })
-            .await
-            .unwrap_or_else(|_| {
-                warn!(sink = %sink_id, "Alert delivery to sink timed out");
-            })
+        let attempts = per_sink.into_iter().map(|(sink_id, idxs)| {
+            let batch: Vec<Alert> = idxs.iter().map(|&i| buffer[i].alert.clone()).collect();
+            async move {
+                let Some(sink) = router.sink(sink_id) else {
+                    warn!(sink = %sink_id, "Route references unconfigured sink");
+                    return (sink_id.clone(), idxs, None);
+                };
+                let count = batch.len();
+                let budget = (SINK_DELIVERY_TIMEOUT_PER_ALERT * count as u32)
+                    .min(SINK_DELIVERY_TIMEOUT_MAX);
+                let delivered = tokio::time::timeout(budget, sink.send_each(&batch))
+                    .await
+                    .unwrap_or_else(|_| {
+                        warn!(sink = %sink_id, batch_len = count, "Alert delivery to sink timed out");
+                        vec![false; count]
+                    });
+                (sink_id.clone(), idxs, Some(delivered))
+            }
         });
+        let results = futures::future::join_all(attempts).await;
 
-        futures::future::join_all(futures).await;
+        for (sink_id, idxs, delivered) in results {
+            // An unconfigured sink can never succeed; stop owing it.
+            let delivered = delivered.unwrap_or_else(|| vec![true; idxs.len()]);
+            for (i, ok) in idxs.into_iter().zip(delivered) {
+                if ok {
+                    buffer[i].delivered = true;
+                    buffer[i].sinks.retain(|s| s != &sink_id);
+                }
+            }
+        }
+
+        let mut retry = Vec::new();
+        for mut pending in buffer.drain(..) {
+            pending.attempts += 1;
+            if pending.sinks.is_empty() {
+                gate.confirm(&pending.alert).await;
+                continue;
+            }
+            if pending.attempts < max_attempts {
+                retry.push(pending);
+                continue;
+            }
+            error!(
+                rule = pending.alert.rule.name,
+                sinks = ?pending.sinks,
+                attempts = pending.attempts,
+                "Giving up on alert delivery",
+            );
+            // Delivered somewhere: keep the claim so those sinks don't get it twice.
+            if pending.delivered {
+                gate.confirm(&pending.alert).await;
+            } else {
+                gate.release(&pending.alert).await;
+            }
+        }
+        *buffer = retry;
+    }
+}
+
+/// An admitted alert and the sinks it is still owed to.
+struct Pending {
+    alert: Alert,
+    sinks: Vec<SinkId>,
+    attempts: u32,
+    delivered: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fleet_gate::FleetGate;
+    use crate::sinks::{AlertSink, AlertSinkError};
+    use async_trait::async_trait;
+    use domain::programs::Program;
+    use domain::rules::RuleId;
+    use parking_lot::Mutex;
+    use std::sync::Arc;
+
+    const RULE: RuleId = RuleId::new(Program::new("test_program"), "rule");
+
+    /// Fails the first `fail_first` posts, then delivers; records delivered messages.
+    struct FlakySink {
+        id: SinkId,
+        fail_first: usize,
+        posts: Mutex<usize>,
+        delivered: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl AlertSink for FlakySink {
+        fn id(&self) -> &SinkId {
+            &self.id
+        }
+        async fn send(&self, alert: &Alert) -> Result<(), AlertSinkError> {
+            let mut posts = self.posts.lock();
+            *posts += 1;
+            if *posts <= self.fail_first {
+                return Err(AlertSinkError::BetterStackSinkError("down".into()));
+            }
+            self.delivered.lock().push(alert.message.clone());
+            Ok(())
+        }
+        async fn send_batch(&self, alerts: &[Alert]) -> Result<(), AlertSinkError> {
+            for a in alerts {
+                self.send(a).await?;
+            }
+            Ok(())
+        }
+    }
+
+    fn alert(msg: &str) -> Alert {
+        Alert::for_rule(RULE).message(msg).key([msg]).build()
+    }
+
+    async fn run(fail_first: usize, alerts: Vec<Alert>) -> Vec<String> {
+        let id: SinkId = "flaky".into();
+        let delivered = Arc::new(Mutex::new(Vec::new()));
+        let sink = FlakySink {
+            id: id.clone(),
+            fail_first,
+            posts: Mutex::new(0),
+            delivered: Arc::clone(&delivered),
+        };
+        let router = Router::new(
+            HashMap::from([(RULE, vec![id.clone()])]),
+            HashMap::from([(id, Box::new(sink) as Box<dyn AlertSink>)]),
+        );
+        let gate = CooldownGate::new(None, Some(FleetGate::in_memory(HashMap::new())));
+        let (tx, rx) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        let tracker = TaskTracker::new();
+        AlertingService::new(rx, router, gate, cancel.clone())
+            .with_flush_interval(Duration::from_millis(10))
+            .start(&tracker);
+
+        for a in alerts {
+            tx.send(a).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        cancel.cancel();
+        tracker.close();
+        tracker.wait().await;
+        let out = delivered.lock().clone();
+        out
+    }
+
+    /// A transient sink failure is retried on the next flush instead of lost.
+    #[tokio::test]
+    async fn failed_delivery_is_retried() {
+        assert_eq!(run(2, vec![alert("a")]).await, vec!["a"]);
+    }
+
+    /// Given up after every attempt failed, the fleet claim is released, so the
+    /// next occurrence of the same alert is not suppressed by it.
+    #[tokio::test]
+    async fn undelivered_alert_releases_its_claim() {
+        let delivered = run(MAX_DELIVERY_ATTEMPTS as usize, vec![alert("a"), alert("a")]).await;
+        assert_eq!(delivered, vec!["a"]);
     }
 }

@@ -71,15 +71,18 @@ impl WatchedPrograms {
             }),
             min_context_slot: None,
         };
-        let (fetched, _slot) =
+        let (fetched, slot) =
             try_fetch_accounts_with_slot(&ctx.rpc, &addresses, Some(config)).await?;
-        cache.seed(fetched.iter().filter_map(|(address, account)| {
-            let Some(header) = parser::decode_header(&account.data) else {
-                warn!(%address, "ProgramData account is not in ProgramData state; skipping");
-                return None;
-            };
-            Some((*address, header.at(*address)))
-        }));
+        cache.seed(
+            slot,
+            fetched.iter().filter_map(|(address, account)| {
+                let Some(header) = parser::decode_header(&account.data) else {
+                    warn!(%address, "ProgramData account is not in ProgramData state; skipping");
+                    return None;
+                };
+                Some((*address, header.at(*address)))
+            }),
+        );
         Ok(())
     }
 }

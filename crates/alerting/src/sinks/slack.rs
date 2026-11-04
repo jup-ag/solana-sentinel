@@ -59,6 +59,7 @@ impl SlackSink {
     async fn post(&self, alert: &Alert) -> Result<(), AlertSinkError> {
         const MAX_ATTEMPTS: u32 = 3;
         const BASE_BACKOFF: Duration = Duration::from_millis(100);
+        const MAX_BACKOFF: Duration = Duration::from_secs(5);
 
         let payload = SlackPayload::from_alert(&self.channel, alert);
         let mut attempt = 0;
@@ -118,8 +119,10 @@ impl SlackSink {
                     if !retryable || attempt >= MAX_ATTEMPTS {
                         return Err(e);
                     }
-                    let backoff =
-                        retry_after.unwrap_or_else(|| BASE_BACKOFF * 2u32.pow(attempt - 1));
+                    // Clamped so one rate-limited alert can't eat the whole delivery budget.
+                    let backoff = retry_after
+                        .unwrap_or_else(|| BASE_BACKOFF * 2u32.pow(attempt - 1))
+                        .min(MAX_BACKOFF);
                     warn!(
                         attempt,
                         max_attempts = MAX_ATTEMPTS,
@@ -154,11 +157,23 @@ impl AlertSink for SlackSink {
     }
 
     async fn send_batch(&self, alerts: &[Alert]) -> Result<(), AlertSinkError> {
-        // No grouping: one message per alert.
         for alert in alerts {
             self.post(alert).await?;
         }
         Ok(())
+    }
+
+    // One message per alert, so each succeeds or fails on its own.
+    async fn send_each(&self, alerts: &[Alert]) -> Vec<bool> {
+        let mut delivered = Vec::with_capacity(alerts.len());
+        for alert in alerts {
+            let result = self.post(alert).await;
+            if let Err(e) = &result {
+                warn!(sink = %self.id, rule = alert.rule.name, error = %e, "Slack alert not delivered");
+            }
+            delivered.push(result.is_ok());
+        }
+        delivered
     }
 }
 

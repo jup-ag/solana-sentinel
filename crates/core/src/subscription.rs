@@ -136,4 +136,15 @@ impl Subscription {
         }
         b
     }
+
+    /// Instruction pipelines share one wire filter, so required keys widen to includes;
+    /// the local `TxGate` still enforces the required set.
+    pub fn shared_tx_prefilter(&self) -> PrefilterBuilder {
+        let include: HashSet<Pubkey> = if self.tx_accounts_include.is_empty() {
+            self.tx_accounts_required.clone()
+        } else {
+            self.tx_accounts_include.clone()
+        };
+        PrefilterBuilder::default().transaction_accounts_include(&include)
+    }
 }

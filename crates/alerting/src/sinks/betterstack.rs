@@ -252,4 +252,18 @@ impl AlertSink for BetterstackSink {
         results.into_iter().collect::<Result<Vec<_>, _>>()?;
         Ok(())
     }
+
+    // One incident per alert, so each succeeds or fails on its own.
+    async fn send_each(&self, alerts: &[Alert]) -> Vec<bool> {
+        let results = futures::future::join_all(alerts.iter().map(|a| self.send(a))).await;
+        results
+            .into_iter()
+            .map(|r| {
+                if let Err(e) = &r {
+                    warn!(sink = %self.id(), error = %e, "BetterStack alert not delivered");
+                }
+                r.is_ok()
+            })
+            .collect()
+    }
 }

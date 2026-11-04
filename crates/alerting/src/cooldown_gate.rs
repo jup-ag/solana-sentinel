@@ -59,4 +59,32 @@ impl CooldownGate {
 
         true
     }
+
+    /// Delivered to at least one sink: the claims stand for their cooldown.
+    pub async fn confirm(&mut self, alert: &Alert) {
+        if let Some(gate) = &mut self.local_gate {
+            if let Err(e) = gate.confirm(alert).await {
+                error!("Failed to confirm local gate claim: {e}");
+            }
+        }
+        if let Some(gate) = &mut self.fleet_gate {
+            if let Err(e) = gate.confirm(alert).await {
+                error!("Failed to confirm fleet gate claim: {e}");
+            }
+        }
+    }
+
+    /// Delivered nowhere: free the claims so the next occurrence (or a replay) can send.
+    pub async fn release(&mut self, alert: &Alert) {
+        if let Some(gate) = &mut self.local_gate {
+            if let Err(e) = gate.release(alert).await {
+                error!("Failed to release local gate claim: {e}");
+            }
+        }
+        if let Some(gate) = &mut self.fleet_gate {
+            if let Err(e) = gate.release(alert).await {
+                error!("Failed to release fleet gate claim: {e}");
+            }
+        }
+    }
 }

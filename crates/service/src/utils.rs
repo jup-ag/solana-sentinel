@@ -54,11 +54,34 @@ pub async fn wait_for_shutdown_signal(cancel_token: CancellationToken) -> Shutdo
             }
             ShutdownReason::Signal
         }
+        // Kubernetes stops pods with SIGTERM; unhandled, it kills the process before the alert drain.
+        () = sigterm() => {
+            info!("SIGTERM received; shutting down");
+            ShutdownReason::Signal
+        }
         _ = cancel_token.cancelled() => {
             info!("Consumer processing completed; shutting down");
             ShutdownReason::Internal
         }
     }
+}
+
+#[cfg(unix)]
+async fn sigterm() {
+    match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+        Ok(mut s) => {
+            s.recv().await;
+        }
+        Err(err) => {
+            error!(error = %err, "Failed to listen for SIGTERM");
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn sigterm() {
+    std::future::pending::<()>().await;
 }
 
 /// Connects to Redis with a timeout and retry configuration.

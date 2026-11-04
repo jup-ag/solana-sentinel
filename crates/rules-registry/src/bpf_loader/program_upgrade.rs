@@ -42,21 +42,29 @@ impl StreamRule for ProgramUpgrade {
 
     fn evaluate(&self, pd: &ProgramData, ctx: &StreamCtx) -> Option<Alert> {
         let program_id = self.program_ids.get(&pd.address)?;
-        let previous = self.last.replace(Self::ID, pd.address, pd.clone())?;
-        if pd.last_upgrade_slot == previous.last_upgrade_slot {
-            return None;
+        // No usable previous state (a replayed update became the baseline), but a write in
+        // the upgrade's own slot is the upgrade: this catches one made while we were down.
+        let previous = self
+            .last
+            .replace(Self::ID, pd.address, pd.clone(), ctx.slot)
+            .map(|p| p.last_upgrade_slot);
+        match previous {
+            Some(prev) if prev == pd.last_upgrade_slot => return None,
+            None if pd.last_upgrade_slot != ctx.slot => return None,
+            _ => {}
         }
+        let previous_label = previous.map_or_else(|| "unknown".to_string(), |s| s.to_string());
         Some(
             Alert::for_rule(Self::ID)
                 .severity(Severity::Warn)
                 .message(format!(
-                    "Program {program_id} upgraded at slot {} (previous upgrade slot {})",
-                    pd.last_upgrade_slot, previous.last_upgrade_slot
+                    "Program {program_id} upgraded at slot {} (previous upgrade slot {previous_label})",
+                    pd.last_upgrade_slot
                 ))
                 .meta("program_id", program_id)
                 .meta("program_data", pd.address)
                 .meta("upgrade_slot", pd.last_upgrade_slot)
-                .meta("previous_upgrade_slot", previous.last_upgrade_slot)
+                .meta("previous_upgrade_slot", previous_label)
                 .meta_opt("upgrade_authority", pd.upgrade_authority)
                 .key([program_id.to_string(), pd.last_upgrade_slot.to_string()])
                 .scope(ctx.tx_scope())

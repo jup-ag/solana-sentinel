@@ -24,9 +24,11 @@ timeout_seconds = 120
 # Client-side reconnect with slot replay and dedup; false makes a dropped
 # stream stop the service instead.
 auto_reconnect = true
-# Bounded channel between the source and the pipelines.
-# Larger = more tolerance for downstream stalls, more memory.
-sources_channel_size = 50000
+# Largest gRPC message accepted, in bytes (default 16 MiB, above the 10 MiB account limit).
+max_decoding_message_size = 16777216
+# Bounded channel between the source and the pipelines, counted in updates, not bytes.
+# Larger = more tolerance for downstream stalls, more memory (large accounts add up fast).
+sources_channel_size = 10000
 
 # RPC endpoint for on-demand queries (e.g. fetching account data).
 [rpc]
@@ -72,10 +74,6 @@ url = "http://localhost:8123"
 user = "default"
 password = ""
 database = "default"
-# Rows are buffered and flushed in batches of this size or when the flush
-# interval elapses, whichever comes first.
-batch_size = 100
-flush_interval_ms = 5000
 
 # Secondary ClickHouse: separate cluster for compliance/audit retention.
 [[sinks]]
@@ -85,8 +83,6 @@ url = "http://audit-clickhouse.internal:8123"
 user = "audit"
 password = ""
 database = "audit"
-batch_size = 100
-flush_interval_ms = 5000
 
 # Slack: on-call channel. Pages the team on critical events.
 [[sinks]]
@@ -94,10 +90,6 @@ type = "slack"
 id = "oncall-slack"
 bot_auth_token = "xoxb-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 channel = "CXXXXXXXXX"
-# Max alerts coalesced into a single Slack message. Larger batches reduce
-# webhook calls but produce longer messages; Slack will reject overly long
-# payloads, so don't push this too high.
-max_batch_len = 20
 # HTTP timeout for the webhook POST, in seconds.
 timeout_seconds = 10
 
@@ -107,7 +99,6 @@ type = "slack"
 id = "info-slack"
 bot_auth_token = "xoxb-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 channel = "CXXXXXXXXX"
-max_batch_len = 20
 timeout_seconds = 10
 
 [[sinks]]

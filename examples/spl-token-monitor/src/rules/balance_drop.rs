@@ -56,12 +56,14 @@ impl StreamRule for BalanceDrop {
 
     /// Seed the cache from RPC so the first streamed update is already a comparison.
     async fn bootstrap(&mut self, ctx: &BootstrapCtx) -> anyhow::Result<()> {
-        let (fetched, _slot) = try_fetch_accounts_with_slot(&ctx.rpc, &self.accounts, None).await?;
-        self.last
-            .seed(fetched.iter().filter_map(|(pubkey, account)| {
+        let (fetched, slot) = try_fetch_accounts_with_slot(&ctx.rpc, &self.accounts, None).await?;
+        self.last.seed(
+            slot,
+            fetched.iter().filter_map(|(pubkey, account)| {
                 let state = spl_token_interface::state::Account::unpack(&account.data).ok()?;
                 Some((*pubkey, state.amount))
-            }));
+            }),
+        );
         Ok(())
     }
 
@@ -70,7 +72,9 @@ impl StreamRule for BalanceDrop {
             return None;
         };
         let account = ctx.account?;
-        let previous = self.last.replace(Self::ID, account, token.amount)?;
+        let previous = self
+            .last
+            .replace(Self::ID, account, token.amount, ctx.slot)?;
         if previous == 0 || token.amount >= previous {
             return None;
         }

@@ -52,9 +52,9 @@ impl StreamRule for SupplyIncrease {
 
     async fn bootstrap(&mut self, ctx: &BootstrapCtx) -> anyhow::Result<()> {
         let mints: Vec<Pubkey> = self.thresholds.keys().copied().collect();
-        let fetched = fetch_mints(&ctx.rpc, &mints).await?;
+        let (fetched, slot) = fetch_mints(&ctx.rpc, &mints).await?;
         self.supply
-            .seed(fetched.iter().map(|(pk, mint)| (*pk, mint.supply)));
+            .seed(slot, fetched.iter().map(|(pk, mint)| (*pk, mint.supply)));
         Ok(())
     }
 
@@ -64,7 +64,9 @@ impl StreamRule for SupplyIncrease {
         };
         let pubkey = ctx.account?;
         let threshold = *self.thresholds.get(&pubkey)?;
-        let previous = self.supply.replace(Self::ID, pubkey, mint.supply)?;
+        let previous = self
+            .supply
+            .replace(Self::ID, pubkey, mint.supply, ctx.slot)?;
         if previous == 0 || mint.supply <= previous {
             return None;
         }

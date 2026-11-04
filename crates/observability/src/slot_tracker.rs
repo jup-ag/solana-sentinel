@@ -1,7 +1,8 @@
 use crate::prometheus::metrics::{
     record_grpc_event, record_rpc_fetch_status, record_rpc_latency, GrpcEvent, RpcFetchStatus,
 };
-use anyhow::bail;
+use domain::inflight::oldest_pending_slot;
+use parking_lot::Mutex;
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
 use shipstern::Handler;
@@ -19,6 +20,11 @@ use tracing::{debug, error, info, warn};
 const SLOT_CHECKPOINT_RECORD_INTERVAL: Duration = Duration::from_secs(5); // 5 seconds
 const SLOT_CHECKPOINT_MAX_DIFF_THRESHOLD: u64 = 11_000; //  ~70 minutes at 400ms slot time (NOTE: please change this when slot times change)
 const SLOT_CHECKPOINT_KEY_REDIS: &str = "slot_checkpoint:last_seen_slot"; // Redis key to store the last seen slot checkpoint.
+                                                                          // No slot for this long means a hung stream (no keepalive covers it); stop so the pod restarts.
+                                                                          // Longer than a few client reconnect backoffs, which recover in place.
+const STREAM_STALL_TIMEOUT: Duration = Duration::from_secs(120);
+// Bootstrap runs before the stream starts, so the first slot gets a longer budget.
+const FIRST_SLOT_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Clone)]
 pub struct FirstGrpcSlotSeenGuard(Arc<OnceLock<()>>);
@@ -74,6 +80,10 @@ pub struct SlotTracker {
     slot_checkpoint: SlotCheckpoint,
     cancel_token: CancellationToken,
     first_grpc_slot_seen: FirstGrpcSlotSeenGuard,
+    /// When the stream last delivered a slot (init time until the first one).
+    last_slot_at: Arc<Mutex<Instant>>,
+    /// Only for sources that stream every slot; Kafka synthesizes slots from records.
+    stall_watchdog: bool,
 }
 
 impl SlotTracker {
@@ -86,6 +96,7 @@ impl SlotTracker {
         pod_id: &str,
         cancel_token: CancellationToken,
         tracker: &TaskTracker,
+        stall_watchdog: bool,
     ) -> anyhow::Result<Self> {
         let slot_checkpoint = SlotCheckpoint::new(redis_conn, pod_id);
 
@@ -96,6 +107,8 @@ impl SlotTracker {
             slot_checkpoint,
             cancel_token,
             first_grpc_slot_seen: FirstGrpcSlotSeenGuard::new(),
+            last_slot_at: Arc::new(Mutex::new(Instant::now())),
+            stall_watchdog,
         };
         slot_tracker.spawn_checkpoint_recorder(tracker);
         Ok(slot_tracker)
@@ -114,6 +127,27 @@ impl SlotTracker {
 
     fn store_last_seen_grpc_slot(&self, slot: u64) {
         self.last_seen_grpc_slot.store(slot);
+        *self.last_slot_at.lock() = Instant::now();
+    }
+
+    /// The checkpoint the stream started from could not be replayed; forget it so the
+    /// restart subscribes live instead of failing on the same slot again.
+    pub async fn discard_checkpoint(&self) {
+        self.slot_checkpoint.clear().await;
+    }
+
+    /// Time since the last slot, or `None` while within budget.
+    fn stalled_for(&self) -> Option<Duration> {
+        if !self.stall_watchdog {
+            return None;
+        }
+        let idle = self.last_slot_at.lock().elapsed();
+        let budget = if self.first_grpc_slot_seen.is_seen() {
+            STREAM_STALL_TIMEOUT
+        } else {
+            FIRST_SLOT_TIMEOUT
+        };
+        (idle > budget).then_some(idle)
     }
 
     // Try to seed the last seen gRPC slot from the checkpoint.
@@ -127,19 +161,22 @@ impl SlotTracker {
             return Ok(LastSeenGrpcSlot::live());
         };
 
+        // A degraded or lagging RPC says nothing about the checkpoint; replay from it anyway.
+        // If the server can't replay that far, the consumer discards it and the restart goes live.
         let rpc_slot = match fetch_latest_slot_with_retry(rpc).await {
             Ok(slot) => slot,
             Err(e) => {
-                bail!("Failed to fetch latest slot from RPC: {}", e);
+                warn!("Failed to fetch latest slot from RPC ({e}); using checkpoint {checkpoint_slot} unchecked");
+                return Ok(LastSeenGrpcSlot::seeded(checkpoint_slot));
             }
         };
 
         if rpc_slot < checkpoint_slot {
-            bail!(
-                "Checkpoint slot {} is ahead of the latest RPC slot {}; this should not happen",
-                checkpoint_slot,
-                rpc_slot
+            warn!(
+                "Checkpoint slot {} is ahead of the latest RPC slot {}; RPC is lagging, using checkpoint",
+                checkpoint_slot, rpc_slot
             );
+            return Ok(LastSeenGrpcSlot::seeded(checkpoint_slot));
         }
 
         let diff = rpc_slot.abs_diff(checkpoint_slot);
@@ -161,11 +198,13 @@ impl SlotTracker {
     }
 
     fn spawn_checkpoint_recorder(&self, tracker: &TaskTracker) {
+        let this = self.clone();
         let Self {
             last_seen_grpc_slot,
             slot_checkpoint,
             cancel_token,
             first_grpc_slot_seen,
+            ..
         } = self.clone();
         info!(
             "Starting slot checkpoint recorder task with interval: {:?}",
@@ -180,11 +219,22 @@ impl SlotTracker {
                         break;
                     }
                     _ = tick.tick() => {
+                        if let Some(idle) = this.stalled_for() {
+                            error!(?idle, "No slot from the stream; stopping so the service restarts");
+                            cancel_token.cancel();
+                            break;
+                        }
                         if !first_grpc_slot_seen.is_seen() {
                             debug!("No gRPC slot seen yet, skipping checkpoint record");
                             continue;
                         }
-                        slot_checkpoint.write(last_seen_grpc_slot.load()).await;
+                        // Replay is inclusive of the checkpoint, so stopping at the oldest
+                        // undelivered alert's slot re-raises it after a crash.
+                        let mut slot = last_seen_grpc_slot.load();
+                        if let Some(pending) = oldest_pending_slot() {
+                            slot = slot.min(pending);
+                        }
+                        slot_checkpoint.write(slot).await;
                     }
                 }
             }
@@ -240,8 +290,9 @@ impl LastSeenGrpcSlot {
         Self(Arc::new(AtomicU64::new(slot)))
     }
 
+    /// Monotonic: a late or replayed slot never moves the checkpoint back.
     pub fn store(&self, slot: u64) {
-        self.0.store(slot, Ordering::Relaxed);
+        self.0.fetch_max(slot, Ordering::Relaxed);
     }
     pub fn load(&self) -> u64 {
         self.0.load(Ordering::Relaxed)
@@ -275,6 +326,13 @@ impl SlotCheckpoint {
         let mut conn = self.redis_conn.clone();
         if let Err(e) = conn.set::<_, _, ()>(&self.redis_key, slot).await {
             error!("Failed to persist slot {} to checkpoint: {}", slot, e);
+        }
+    }
+
+    pub async fn clear(&self) {
+        let mut conn = self.redis_conn.clone();
+        if let Err(e) = conn.del::<_, ()>(&self.redis_key).await {
+            error!("Failed to discard slot checkpoint: {}", e);
         }
     }
 

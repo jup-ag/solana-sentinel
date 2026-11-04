@@ -1,4 +1,4 @@
-use crate::local_gate::set_nx_exat;
+use crate::claim::{self, OpenClaims};
 use domain::alert::Alert;
 use domain::rules::RuleId;
 use parking_lot::Mutex;
@@ -13,7 +13,11 @@ const DEFAULT_TTL: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Clone)]
 enum Backend {
-    Redis(ClusterConnection),
+    Redis {
+        conn: ClusterConnection,
+        owner: String,
+        open: OpenClaims,
+    },
     /// Single-process stand-in; a "fleet" of one.
     Memory(Arc<Mutex<HashMap<String, i64>>>),
 }
@@ -30,13 +34,19 @@ pub struct FleetGate {
 
 impl FleetGate {
     /// `namespace` prefixes every Redis key; all pods of one deployment must share it.
+    /// `pod_id` owns this node's claims until they are settled.
     pub fn new(
         redis_conn: ClusterConnection,
         periods: HashMap<RuleId, Duration>,
         namespace: &str,
+        pod_id: &str,
     ) -> Self {
         Self {
-            backend: Backend::Redis(redis_conn),
+            backend: Backend::Redis {
+                conn: redis_conn,
+                owner: pod_id.to_string(),
+                open: OpenClaims::default(),
+            },
             periods,
             default_ttl: DEFAULT_TTL,
             key_prefix: format!("{namespace}:alerts:fleet_gate_key"),
@@ -70,10 +80,12 @@ impl FleetGate {
             .saturating_add(period.as_secs() as i64)
             .sub(1);
 
-        let key = format!("{}:{}", self.key_prefix, alert.fleet_gate_key());
+        let key = self.key(alert);
 
         match &mut self.backend {
-            Backend::Redis(conn) => set_nx_exat(conn, &key, ttl_timestamp).await,
+            Backend::Redis { conn, owner, open } => {
+                claim::claim(conn, open, &key, owner, ttl_timestamp).await
+            }
             Backend::Memory(map) => Ok(memory_set_nx(
                 &mut map.lock(),
                 key,
@@ -81,6 +93,29 @@ impl FleetGate {
                 alert.fired_at.timestamp(),
             )),
         }
+    }
+
+    pub async fn confirm(&mut self, alert: &Alert) -> anyhow::Result<()> {
+        let key = self.key(alert);
+        match &mut self.backend {
+            Backend::Redis { conn, open, .. } => claim::confirm(conn, open, &key).await,
+            Backend::Memory(_) => Ok(()),
+        }
+    }
+
+    pub async fn release(&mut self, alert: &Alert) -> anyhow::Result<()> {
+        let key = self.key(alert);
+        match &mut self.backend {
+            Backend::Redis { conn, owner, open } => claim::release(conn, open, &key, owner).await,
+            Backend::Memory(map) => {
+                map.lock().remove(&key);
+                Ok(())
+            }
+        }
+    }
+
+    fn key(&self, alert: &Alert) -> String {
+        format!("{}:{}", self.key_prefix, alert.fleet_gate_key())
     }
 }
 
@@ -195,9 +230,14 @@ mod tests {
         // 16 separate gates (one per node) each rebuild their own alert from one seed:
         // distinct objects, one shared key, racing on the cluster.
         let handles: Vec<_> = (0..16)
-            .map(|_| {
-                let mut gate =
-                    FleetGate::new(conn.clone(), periods(Duration::from_secs(60)), "test");
+            .map(|i| {
+                let node = format!("node_{i}");
+                let mut gate = FleetGate::new(
+                    conn.clone(),
+                    periods(Duration::from_secs(60)),
+                    "test",
+                    &node,
+                );
                 tokio::spawn(async move { gate.check(&build_alert(0)).await.unwrap() })
             })
             .collect();

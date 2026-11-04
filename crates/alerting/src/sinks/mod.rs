@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use domain::alert::Alert;
 use domain::sinks::SinkId;
+use tracing::warn;
 
 pub mod betterstack;
 pub mod clickhouse;
@@ -22,4 +23,15 @@ pub trait AlertSink: Send + Sync {
     fn id(&self) -> &SinkId;
     async fn send(&self, alert: &Alert) -> Result<(), AlertSinkError>;
     async fn send_batch(&self, alerts: &[Alert]) -> Result<(), AlertSinkError>;
+
+    /// Per-alert outcome, so only what failed is retried. Default: the batch is all-or-nothing.
+    async fn send_each(&self, alerts: &[Alert]) -> Vec<bool> {
+        match self.send_batch(alerts).await {
+            Ok(()) => vec![true; alerts.len()],
+            Err(e) => {
+                warn!(sink = %self.id(), error = %e, batch_len = alerts.len(), "Failed to deliver alerts to sink");
+                vec![false; alerts.len()]
+            }
+        }
+    }
 }

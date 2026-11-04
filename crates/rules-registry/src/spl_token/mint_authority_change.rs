@@ -53,14 +53,17 @@ impl StreamRule for MintAuthorityChange {
     }
 
     async fn bootstrap(&mut self, ctx: &BootstrapCtx) -> anyhow::Result<()> {
-        let fetched = fetch_mints(&ctx.rpc, &self.mints).await?;
-        self.last.seed(fetched.iter().map(|(pk, m)| {
-            let auth = Authorities {
-                mint: m.mint_authority.into(),
-                freeze: m.freeze_authority.into(),
-            };
-            (*pk, auth)
-        }));
+        let (fetched, slot) = fetch_mints(&ctx.rpc, &self.mints).await?;
+        self.last.seed(
+            slot,
+            fetched.iter().map(|(pk, m)| {
+                let auth = Authorities {
+                    mint: m.mint_authority.into(),
+                    freeze: m.freeze_authority.into(),
+                };
+                (*pk, auth)
+            }),
+        );
         Ok(())
     }
 
@@ -76,7 +79,7 @@ impl StreamRule for MintAuthorityChange {
                 .as_ref()
                 .map(|k| to_solana_pubkey(k.0)),
         };
-        let previous = self.last.replace(Self::ID, pubkey, current)?;
+        let previous = self.last.replace(Self::ID, pubkey, current, ctx.slot)?;
         if previous == current {
             return None;
         }
