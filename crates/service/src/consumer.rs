@@ -232,18 +232,33 @@ fn spawn_runtime<S: FilterUpdateSource>(
         tokio::select! {
             _ = cancel_token.cancelled() => info!("Cancellation requested; stopping consumer runtime"),
             result = runtime.try_run_async() => {
-                match result {
-                    Ok(()) => info!("Consumer runtime stopped; shutting down service"),
-                    Err(err) => error!(error = %err, "Consumer runtime failed; shutting down service"),
-                }
-                // Stopping before any slot while replaying usually means the server no longer
-                // holds `from_slot`; without this every restart would fail on it again.
-                if replaying && slot_tracker.reader().load().is_none() {
-                    warn!("Stream stopped before its first slot; discarding the replay checkpoint");
+                let replay_rejected = match &result {
+                    Ok(()) => {
+                        info!("Consumer runtime stopped; shutting down service");
+                        false
+                    }
+                    Err(err) => {
+                        error!(error = %err, "Consumer runtime failed; shutting down service");
+                        is_replay_rejection(err)
+                    }
+                };
+                // Only a server refusing `from_slot` discards it; any other failure keeps it,
+                // so the next start still replays the outage.
+                if replaying && replay_rejected && slot_tracker.reader().load().is_none() {
+                    warn!("Server rejected the replay slot; discarding the checkpoint");
                     slot_tracker.discard_checkpoint().await;
                 }
                 cancel_token.cancel();
             }
         }
     });
+}
+
+/// Geyser's answers to a `from_slot` it cannot serve: outside its replay buffer, or no buffer.
+fn is_replay_rejection(err: &shipstern::Error) -> bool {
+    let shipstern::Error::YellowstoneStatus(status) = err else {
+        return false;
+    };
+    let msg = status.message();
+    msg.contains("is not available") || msg.contains("from_slot is not supported")
 }

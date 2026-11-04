@@ -32,6 +32,14 @@ impl Router {
         self.sinks.get(id).map(std::convert::AsRef::as_ref)
     }
 
+    /// The routed rule with this program and name, if any.
+    pub fn rule(&self, program: &str, name: &str) -> Option<RuleId> {
+        self.routes
+            .keys()
+            .find(|r| r.program.as_str() == program && r.name == name)
+            .copied()
+    }
+
     pub fn sink_count(&self) -> usize {
         self.sinks.len()
     }

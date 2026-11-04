@@ -51,7 +51,7 @@ impl LocalGate {
 
     pub async fn confirm(&mut self, alert: &Alert) -> anyhow::Result<()> {
         let key = self.key(alert);
-        claim::confirm(&mut self.conn, &self.open, &key).await
+        claim::confirm(&mut self.conn, &self.open, &key, &self.owner).await
     }
 
     pub async fn release(&mut self, alert: &Alert) -> anyhow::Result<()> {

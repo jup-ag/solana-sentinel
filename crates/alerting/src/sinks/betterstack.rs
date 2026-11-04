@@ -1,7 +1,8 @@
-use crate::sinks::{AlertSink, AlertSinkError};
+use crate::sinks::{AlertSink, AlertSinkError, Delivery};
 use async_trait::async_trait;
 use domain::alert::{Alert, Severity};
 use domain::sinks::SinkId;
+use futures::stream::{FuturesUnordered, StreamExt};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -254,16 +255,20 @@ impl AlertSink for BetterstackSink {
     }
 
     // One incident per alert, so each succeeds or fails on its own.
-    async fn send_each(&self, alerts: &[Alert]) -> Vec<bool> {
-        let results = futures::future::join_all(alerts.iter().map(|a| self.send(a))).await;
-        results
-            .into_iter()
-            .map(|r| {
-                if let Err(e) = &r {
+    async fn send_each(&self, alerts: &[Alert], out: &mut [Delivery]) {
+        let mut sends: FuturesUnordered<_> = alerts
+            .iter()
+            .enumerate()
+            .map(|(i, a)| async move { (i, self.send(a).await) })
+            .collect();
+        while let Some((i, result)) = sends.next().await {
+            out[i] = match result {
+                Ok(()) => Delivery::Delivered,
+                Err(e) => {
                     warn!(sink = %self.id(), error = %e, "BetterStack alert not delivered");
+                    Delivery::Failed
                 }
-                r.is_ok()
-            })
-            .collect()
+            };
+        }
     }
 }

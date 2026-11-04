@@ -98,7 +98,7 @@ impl FleetGate {
     pub async fn confirm(&mut self, alert: &Alert) -> anyhow::Result<()> {
         let key = self.key(alert);
         match &mut self.backend {
-            Backend::Redis { conn, open, .. } => claim::confirm(conn, open, &key).await,
+            Backend::Redis { conn, owner, open } => claim::confirm(conn, open, &key, owner).await,
             Backend::Memory(_) => Ok(()),
         }
     }

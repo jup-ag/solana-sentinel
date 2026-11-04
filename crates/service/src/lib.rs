@@ -13,6 +13,7 @@ use crate::consumer::ConsumerService;
 use crate::utils::{connect_to_redis, extract_pod_id, wait_for_shutdown_signal, ShutdownReason};
 pub use crate::utils::{setup_crypto_provider, setup_tracing_subscriber};
 use crate::validate::validate_programs;
+use alerting::outbox::Outbox;
 use alerting::service::AlertingService;
 use observability::slot_tracker::SlotTracker;
 use observability::{prometheus, run_observability_stack};
@@ -76,6 +77,8 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
     )
     .await?;
 
+    let outbox = Outbox::new(redis_sidecar_conn.clone(), &pod_id, opts.service_name);
+
     // Tracks the last seen slot and persists it to Redis for recovery across restarts.
     let slot_tracker = SlotTracker::try_init(
         &rpc,
@@ -115,7 +118,8 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
 
     // Start the alerting service and send alerts to the clickhouse and slack sinks
     let alerting_service =
-        AlertingService::new(alerts_rx, router, cooldown_gate, cancel_token.clone());
+        AlertingService::new(alerts_rx, router, cooldown_gate, cancel_token.clone())
+            .with_outbox(outbox);
     alerting_service.start(&tracker);
 
     // Wait for shutdown signal (Ctrl+C) or cancellation token to be triggered

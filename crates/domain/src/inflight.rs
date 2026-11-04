@@ -1,5 +1,5 @@
-//! Slots of stream alerts not yet delivered. The slot checkpoint must not pass them:
-//! replay starts at the checkpoint, so a crash would otherwise lose the alert for good.
+//! Slots of stream alerts not yet persisted to the alert outbox (or delivered, without one).
+//! The slot checkpoint must not pass them: replay from it is the only way to re-raise them.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};

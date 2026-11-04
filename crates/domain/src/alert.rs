@@ -114,7 +114,7 @@ pub struct Alert {
     pub fleet_gate_key: DedupKey,
     pub scope: DedupScope,
     pub fired_at: DateTime<Utc>,
-    /// Keeps the slot checkpoint behind this alert until it is delivered; stream alerts only.
+    /// Keeps the slot checkpoint behind this alert until it is persisted; stream alerts only.
     pub slot_hold: Option<SlotHold>,
 }
 

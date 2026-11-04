@@ -59,21 +59,38 @@ async fn try_claim(
     Ok(false)
 }
 
+// Compare-and-set / compare-and-delete: the claim may expire mid-delivery and be taken by
+// another pod, whose claim a non-atomic check would overwrite or delete.
+const CONFIRM_IF_OWNER: &str = r#"
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('SET', KEYS[1], ARGV[2], 'XX', 'KEEPTTL')
+end
+return nil
+"#;
+const RELEASE_IF_OWNER: &str = r#"
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+"#;
+
 /// Delivered: keep the key for its cooldown, no longer tied to this owner.
 pub(crate) async fn confirm(
     conn: &mut impl ConnectionLike,
     open: &OpenClaims,
     key: &str,
+    owner: &str,
 ) -> anyhow::Result<()> {
     if !open.0.lock().remove(key) {
         return Ok(());
     }
-    redis::cmd("SET")
+    redis::cmd("EVAL")
+        .arg(CONFIRM_IF_OWNER)
+        .arg(1)
         .arg(key)
+        .arg(owner)
         .arg(DELIVERED)
-        .arg("XX")
-        .arg("KEEPTTL")
-        .query_async::<Option<()>>(conn)
+        .query_async::<redis::Value>(conn)
         .await?;
     Ok(())
 }
@@ -88,9 +105,12 @@ pub(crate) async fn release(
     if !open.0.lock().remove(key) {
         return Ok(());
     }
-    let holder: Option<String> = redis::cmd("GET").arg(key).query_async(conn).await?;
-    if holder.as_deref() == Some(owner) {
-        redis::cmd("DEL").arg(key).query_async::<()>(conn).await?;
-    }
+    redis::cmd("EVAL")
+        .arg(RELEASE_IF_OWNER)
+        .arg(1)
+        .arg(key)
+        .arg(owner)
+        .query_async::<redis::Value>(conn)
+        .await?;
     Ok(())
 }
