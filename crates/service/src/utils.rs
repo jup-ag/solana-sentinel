@@ -88,8 +88,8 @@ async fn sigterm() {
 pub async fn connect_to_redis(redis_url: &str) -> anyhow::Result<ConnectionManager> {
     let client = redis::Client::open(redis_url)?;
     let cfg = ConnectionManagerConfig::new()
-        .set_connection_timeout(Duration::from_secs(2))
-        .set_response_timeout(Duration::from_secs(1))
+        .set_connection_timeout(Some(Duration::from_secs(2)))
+        .set_response_timeout(Some(Duration::from_secs(1)))
         .set_number_of_retries(3);
     let conn = ConnectionManager::new_with_config(client, cfg).await?;
     Ok(conn)

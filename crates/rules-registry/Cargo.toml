@@ -31,7 +31,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 solana-sentinel = { workspace = true, features = ["testing"] }
-solana-program-option = "3"
+solana-program-option = "3.1.0"
 tokio = { workspace = true }
 
 [lints]

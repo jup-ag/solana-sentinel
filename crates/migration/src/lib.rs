@@ -24,6 +24,7 @@ pub async fn migrate() -> anyhow::Result<()> {
         password,
         default_database: database,
         tcp_nodelay: true,
+        ..Default::default()
     };
 
     let mut client = if use_tls {
