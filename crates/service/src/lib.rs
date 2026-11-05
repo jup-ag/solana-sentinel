@@ -7,11 +7,15 @@ mod utils;
 pub mod validate;
 pub mod wiring;
 
+use crate::config::service::DataSourceConfig;
 use crate::config::SentinelConfig;
 use crate::consumer::ConsumerService;
-use crate::utils::{connect_to_redis, extract_pod_id, wait_for_shutdown_signal, ShutdownReason};
+use crate::utils::{
+    connect_to_redis, extract_pod_id, listen_for_shutdown_signal, wait_for_shutdown, ShutdownReason,
+};
 pub use crate::utils::{setup_crypto_provider, setup_tracing_subscriber};
 use crate::validate::validate_programs;
+use alerting::outbox::Outbox;
 use alerting::service::AlertingService;
 use observability::slot_tracker::SlotTracker;
 use observability::{prometheus, run_observability_stack};
@@ -21,7 +25,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// What a deployment binary passes in: its name and the programs it runs.
 pub struct RunOptions {
@@ -54,6 +58,7 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
     print_program_reports(&programs);
 
     let cancel_token = CancellationToken::new();
+    let signalled = listen_for_shutdown_signal(&cancel_token);
     let tracker = TaskTracker::new();
     let rpc = Arc::new(RpcClient::new(config.rpc().url.to_string()));
 
@@ -75,6 +80,8 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
     )
     .await?;
 
+    let outbox = Outbox::new(redis_sidecar_conn.clone(), &pod_id, opts.service_name);
+
     // Tracks the last seen slot and persists it to Redis for recovery across restarts.
     let slot_tracker = SlotTracker::try_init(
         &rpc,
@@ -82,8 +89,20 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
         &pod_id,
         cancel_token.clone(),
         &tracker,
+        matches!(config.data_source(), DataSourceConfig::YellowstoneGrpc(_)),
     )
     .await?;
+
+    // Up before bootstrap, so a slow RPC warm-up doesn't fail the liveness probe;
+    // a stream that never delivers is caught by the slot tracker's stall watchdog.
+    let observability = config.observability();
+    run_observability_stack(
+        &slot_tracker,
+        observability.server.bind_addr,
+        observability.heartbeat(),
+        cancel_token.clone(),
+        &tracker,
+    );
 
     // alerts channel to send alerts from the consumer service to the alerting service(clickhouse, slack and betterstack sinks)
     let (alerts_tx, alerts_rx) = mpsc::channel(1024);
@@ -98,25 +117,20 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
         slot_tracker.clone(),
         pod_id.clone(),
     );
-    consumer_service.start(&tracker).await?;
-
-    // Start the observability stack: metrics / health HTTP server and the optional heartbeat.
-    let observability = config.observability();
-    run_observability_stack(
-        &slot_tracker,
-        observability.server.bind_addr,
-        observability.heartbeat(),
-        cancel_token.clone(),
-        &tracker,
-    );
+    // Bootstrap can take minutes of RPC; a shutdown during it skips straight to the drain.
+    tokio::select! {
+        started = consumer_service.start(&tracker) => started?,
+        () = cancel_token.cancelled() => warn!("Shutdown requested during startup"),
+    }
 
     // Start the alerting service and send alerts to the clickhouse and slack sinks
     let alerting_service =
-        AlertingService::new(alerts_rx, router, cooldown_gate, cancel_token.clone());
+        AlertingService::new(alerts_rx, router, cooldown_gate, cancel_token.clone())
+            .with_outbox(outbox);
     alerting_service.start(&tracker);
 
-    // Wait for shutdown signal (Ctrl+C) or cancellation token to be triggered
-    let reason = wait_for_shutdown_signal(cancel_token.clone()).await;
+    // Wait for shutdown signal (Ctrl+C, SIGTERM) or cancellation token to be triggered
+    let reason = wait_for_shutdown(&cancel_token, &signalled).await;
 
     cancel_token.cancel();
     tracker.close();

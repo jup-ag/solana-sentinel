@@ -108,23 +108,33 @@ impl ConsumerService {
 
         // The runtime is generic over its source, so the config variant picks the type here.
         match config.data_source() {
-            DataSourceConfig::YellowstoneGrpc(c) => launch.run::<YellowstoneGrpcSource>(
-                YellowstoneGrpcConfig {
-                    endpoint: c.endpoint.clone(),
-                    x_token: c.token.clone(),
-                    timeout: c.timeout_seconds,
-                    // Fastest path short of shred-level monitoring.
-                    commitment_level: Some(CommitmentLevel::Processed),
-                    from_slot,
-                    accounts_data_slice: Vec::new(),
-                    max_decoding_message_size: None,
-                    accept_compression: None,
-                    auto_reconnect: c.auto_reconnect,
-                    reconnect_max_retries: None,
-                    reconnect_slot_retention: None,
-                },
-                &c.buffer,
-            ),
+            DataSourceConfig::YellowstoneGrpc(c) => {
+                if !c.auto_reconnect {
+                    // yellowstone-grpc-client 13.x runs dedup with slot retention 0 when reconnect
+                    // is off and never prunes sealed slots: memory grows ~60 MB/day until OOM.
+                    warn!(
+                        "auto_reconnect = false leaks memory in the gRPC client; keep it on in \
+                         production"
+                    );
+                }
+                launch.run::<YellowstoneGrpcSource>(
+                    YellowstoneGrpcConfig {
+                        endpoint: c.endpoint.clone(),
+                        x_token: c.token.clone(),
+                        timeout: c.timeout_seconds,
+                        // Fastest path short of shred-level monitoring.
+                        commitment_level: Some(CommitmentLevel::Processed),
+                        from_slot,
+                        accounts_data_slice: Vec::new(),
+                        max_decoding_message_size: Some(c.max_decoding_message_size),
+                        accept_compression: None,
+                        auto_reconnect: c.auto_reconnect,
+                        reconnect_max_retries: None,
+                        reconnect_slot_retention: None,
+                    },
+                    &c.buffer,
+                )
+            }
             DataSourceConfig::Websocket(c) => launch.run::<WebsocketSource>(
                 WebsocketConfig {
                     url: c.url.clone(),
@@ -194,7 +204,12 @@ impl Launch<'_> {
         });
         // Keep the handle so programs can push refreshed prefilters while the stream runs.
         let handle = runtime.handle();
-        spawn_runtime(runtime, self.cancel_token.clone(), self.tracker);
+        spawn_runtime(
+            runtime,
+            self.slot_tracker.clone(),
+            self.cancel_token.clone(),
+            self.tracker,
+        );
         spawn_refresh_loops(
             self.started,
             &handle,
@@ -208,22 +223,42 @@ impl Launch<'_> {
 /// Run the shipstern runtime on the tracker; when it stops for any reason the service shuts down.
 fn spawn_runtime<S: FilterUpdateSource>(
     runtime: Runtime<S>,
+    slot_tracker: SlotTracker,
     cancel_token: CancellationToken,
     tracker: &TaskTracker,
 ) {
+    let replaying = slot_tracker.load_last_seen_grpc_slot() > 0;
     tracker.spawn(async move {
         tokio::select! {
             _ = cancel_token.cancelled() => info!("Cancellation requested; stopping consumer runtime"),
-            result = runtime.try_run_async() => match result {
-                Ok(()) => {
-                    info!("Consumer runtime stopped; shutting down service");
-                    cancel_token.cancel();
+            result = runtime.try_run_async() => {
+                let replay_rejected = match &result {
+                    Ok(()) => {
+                        info!("Consumer runtime stopped; shutting down service");
+                        false
+                    }
+                    Err(err) => {
+                        error!(error = %err, "Consumer runtime failed; shutting down service");
+                        is_replay_rejection(err)
+                    }
+                };
+                // Only a server refusing `from_slot` discards it; any other failure keeps it,
+                // so the next start still replays the outage.
+                if replaying && replay_rejected && slot_tracker.reader().load().is_none() {
+                    warn!("Server rejected the replay slot; discarding the checkpoint");
+                    slot_tracker.discard_checkpoint().await;
                 }
-                Err(err) => {
-                    error!(error = %err, "Consumer runtime failed; shutting down service");
-                    cancel_token.cancel();
-                }
+                cancel_token.cancel();
             }
         }
     });
+}
+
+/// Geyser's answers to a `from_slot` it cannot serve: outside its replay buffer, or no buffer.
+fn is_replay_rejection(err: &shipstern::Error) -> bool {
+    let shipstern::Error::YellowstoneStatus(status) = err else {
+        return false;
+    };
+    let msg = status.message();
+    msg.contains("is not available") || msg.contains("from_slot is not supported")
 }

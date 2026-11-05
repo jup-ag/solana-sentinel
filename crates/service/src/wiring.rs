@@ -148,7 +148,7 @@ pub async fn build_cooldown_gate(
         (false, _) => None,
         (true, Some(url)) => {
             let fleet = connect_to_redis_cluster(url).await?;
-            Some(FleetGate::new(fleet, cooldowns, service_name))
+            Some(FleetGate::new(fleet, cooldowns, service_name, pod_id))
         }
         (true, None) => {
             info!("No redis_fleet_url configured; fleet gate dedups within this process only");

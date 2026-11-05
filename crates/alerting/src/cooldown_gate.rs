@@ -51,6 +51,12 @@ impl CooldownGate {
                 Ok(false) => {
                     debug!(rule = alert.rule.name, "Alert suppressed by fleet gate");
                     record_alert_suppressed(alert.rule.name);
+                    // Settle the local claim, or it stays open and blocks every later occurrence.
+                    if let Some(local) = &mut self.local_gate {
+                        if let Err(e) = local.release(alert).await {
+                            error!("Failed to release local gate claim: {e}");
+                        }
+                    }
                     return false;
                 }
                 Err(e) => error!("Failed to check fleet gate: {e}"),
@@ -58,5 +64,33 @@ impl CooldownGate {
         }
 
         true
+    }
+
+    /// Delivered to at least one sink: the claims stand for their cooldown.
+    pub async fn confirm(&mut self, alert: &Alert) {
+        if let Some(gate) = &mut self.local_gate {
+            if let Err(e) = gate.confirm(alert).await {
+                error!("Failed to confirm local gate claim: {e}");
+            }
+        }
+        if let Some(gate) = &mut self.fleet_gate {
+            if let Err(e) = gate.confirm(alert).await {
+                error!("Failed to confirm fleet gate claim: {e}");
+            }
+        }
+    }
+
+    /// Delivered nowhere: free the claims so the next occurrence (or a replay) can send.
+    pub async fn release(&mut self, alert: &Alert) {
+        if let Some(gate) = &mut self.local_gate {
+            if let Err(e) = gate.release(alert).await {
+                error!("Failed to release local gate claim: {e}");
+            }
+        }
+        if let Some(gate) = &mut self.fleet_gate {
+            if let Err(e) = gate.release(alert).await {
+                error!("Failed to release fleet gate claim: {e}");
+            }
+        }
     }
 }

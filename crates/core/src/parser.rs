@@ -98,7 +98,10 @@ impl PipelineKind {
     pub fn prefilters(self, subscription: &Subscription) -> Vec<PrefilterBuilder> {
         match self {
             Self::Account => subscription.account_prefilters(),
-            Self::Instruction | Self::Transaction if subscription.watches_transactions() => {
+            Self::Instruction if subscription.watches_transactions() => {
+                vec![subscription.shared_tx_prefilter()]
+            }
+            Self::Transaction if subscription.watches_transactions() => {
                 vec![subscription.tx_prefilter()]
             }
             Self::Instruction | Self::Transaction | Self::Poll => Vec::new(),
@@ -194,7 +197,15 @@ where
     }
 
     fn prefilter(&self) -> shipstern_core::Prefilter {
-        self.inner.prefilter()
+        let mut prefilter = self.inner.prefilter();
+        // Instruction prefilters are unioned into one wire filter, where a required set would
+        // bind every other parser too. Codegen parsers require their program id; they self-filter.
+        if P::Input::KIND == PipelineKind::Instruction {
+            if let Some(tx) = prefilter.transaction.as_mut() {
+                tx.accounts_required.clear();
+            }
+        }
+        prefilter
     }
 
     async fn parse(&self, input: &Self::Input) -> ParseResult<Self::Output> {
@@ -204,5 +215,76 @@ where
             }
         }
         self.inner.parse(input).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::raw::RawInstructionParser;
+    use shipstern_core::Prefilter;
+
+    const SQUADS: Pubkey = Pubkey::new_from_array([1; 32]);
+    const MULTISIG: Pubkey = Pubkey::new_from_array([2; 32]);
+    const WALLET: Pubkey = Pubkey::new_from_array([3; 32]);
+
+    /// Stands in for a codegen parser, which requires its own program id.
+    #[derive(Debug, Clone)]
+    struct RequiresProgram;
+
+    impl Parser for RequiresProgram {
+        type Input = InstructionUpdate;
+        type Output = ();
+
+        fn id(&self) -> Cow<'static, str> {
+            Cow::Borrowed("requires_program")
+        }
+
+        fn prefilter(&self) -> shipstern_core::Prefilter {
+            Prefilter::builder()
+                .transaction_accounts([SQUADS])
+                .build()
+                .unwrap()
+        }
+
+        async fn parse(&self, _: &InstructionUpdate) -> ParseResult<()> {
+            Ok(())
+        }
+    }
+
+    // Mirrors FilterPipeline::prefilter for one instruction pipeline.
+    fn pipeline_prefilter<P>(p: P, sub: &Subscription) -> Prefilter
+    where
+        P: Parser<Input = InstructionUpdate> + Send + Sync,
+        P::Output: Send,
+    {
+        let mut prefilter = FrameworkParser::new(p, "id".into(), None).prefilter();
+        for b in PipelineKind::Instruction.prefilters(sub) {
+            prefilter.merge(b.build().unwrap());
+        }
+        prefilter
+    }
+
+    /// Shipstern unions every instruction prefilter into one wire filter; a required key
+    /// from one program must not narrow what another program's instruction rules receive.
+    #[test]
+    fn bundled_instruction_filter_carries_no_required_keys() {
+        let mut bundled = pipeline_prefilter(
+            RequiresProgram,
+            &Subscription::new().tx_accounts_include([MULTISIG]),
+        );
+        bundled.merge(pipeline_prefilter(
+            RawInstructionParser,
+            &Subscription::new().tx_accounts_required([WALLET]),
+        ));
+
+        let tx = bundled.transaction.unwrap();
+        assert!(tx.accounts_required.is_empty());
+        let include: HashSet<Pubkey> = tx
+            .accounts_include
+            .iter()
+            .map(|k| Pubkey::new_from_array(k.0))
+            .collect();
+        assert_eq!(include, HashSet::from([MULTISIG, WALLET]));
     }
 }

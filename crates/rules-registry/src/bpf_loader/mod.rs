@@ -11,7 +11,7 @@ use solana_account_decoder_client_types::UiAccountEncoding;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::api::config::{RpcAccountInfoConfig, UiDataSliceConfig};
 use solana_sentinel::utility::pubkey::deserialize_pubkey_vec;
-use solana_sentinel::utility::rpc::try_fetch_accounts_with_slot;
+use solana_sentinel::utility::rpc::try_fetch_account_chunks;
 use solana_sentinel::{BootstrapCtx, Program, ProgramSpec, StateCache, StreamRules, Subscription};
 use std::collections::HashMap;
 use tracing::warn;
@@ -71,15 +71,18 @@ impl WatchedPrograms {
             }),
             min_context_slot: None,
         };
-        let (fetched, _slot) =
-            try_fetch_accounts_with_slot(&ctx.rpc, &addresses, Some(config)).await?;
-        cache.seed(fetched.iter().filter_map(|(address, account)| {
-            let Some(header) = parser::decode_header(&account.data) else {
-                warn!(%address, "ProgramData account is not in ProgramData state; skipping");
-                return None;
-            };
-            Some((*address, header.at(*address)))
-        }));
+        for (slot, fetched) in try_fetch_account_chunks(&ctx.rpc, &addresses, Some(config)).await? {
+            cache.seed(
+                slot,
+                fetched.iter().filter_map(|(address, account)| {
+                    let Some(header) = parser::decode_header(&account.data) else {
+                        warn!(%address, "ProgramData account is not in ProgramData state; skipping");
+                        return None;
+                    };
+                    Some((*address, header.at(*address)))
+                }),
+            );
+        }
         Ok(())
     }
 }

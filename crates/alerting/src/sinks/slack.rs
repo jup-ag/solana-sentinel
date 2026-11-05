@@ -1,12 +1,13 @@
-use crate::sinks::{AlertSink, AlertSinkError};
+use crate::sinks::{AlertSink, AlertSinkError, Delivery};
 use async_trait::async_trait;
 use chrono::SecondsFormat;
 use domain::alert::{Alert, Severity};
 use domain::sinks::SinkId;
+use parking_lot::Mutex;
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use reqwest::{Client as HttpClient, StatusCode};
 use serde::Serialize;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::warn;
 
 const SLACK_POST_MESSAGE_URL: &str = "https://slack.com/api/chat.postMessage";
@@ -34,6 +35,23 @@ pub struct SlackSink {
     pub http_client: HttpClient,
     pub bot_token: String,
     pub channel: String,
+    /// Slack's `Retry-After` deadline; posts before it are deferred, not attempted.
+    retry_at: Mutex<Option<Instant>>,
+}
+
+/// A post Slack refused for now; `Deferred` carries no failed attempt.
+enum PostError {
+    Failed(AlertSinkError),
+    Deferred,
+}
+
+impl From<PostError> for AlertSinkError {
+    fn from(e: PostError) -> Self {
+        match e {
+            PostError::Failed(e) => e,
+            PostError::Deferred => Self::SlackSinkError("rate limited".into()),
+        }
+    }
 }
 
 impl SlackSink {
@@ -53,13 +71,19 @@ impl SlackSink {
             http_client,
             bot_token,
             channel,
+            retry_at: Mutex::new(None),
         })
     }
 
-    async fn post(&self, alert: &Alert) -> Result<(), AlertSinkError> {
+    async fn post(&self, alert: &Alert) -> Result<(), PostError> {
         const MAX_ATTEMPTS: u32 = 3;
         const BASE_BACKOFF: Duration = Duration::from_millis(100);
+        // Longest wait slept in place; a longer Retry-After defers the alert to a later flush.
+        const MAX_BACKOFF: Duration = Duration::from_secs(5);
 
+        if self.retry_at.lock().is_some_and(|at| Instant::now() < at) {
+            return Err(PostError::Deferred);
+        }
         let payload = SlackPayload::from_alert(&self.channel, alert);
         let mut attempt = 0;
 
@@ -115,8 +139,15 @@ impl SlackSink {
             match result {
                 Ok(()) => return Ok(()),
                 Err((e, retryable, retry_after)) => {
+                    if let Some(wait) = retry_after {
+                        if wait > MAX_BACKOFF || attempt >= MAX_ATTEMPTS {
+                            warn!(error = %e, retry_after_s = wait.as_secs(), "Slack rate limited; deferring");
+                            *self.retry_at.lock() = Some(Instant::now() + wait);
+                            return Err(PostError::Deferred);
+                        }
+                    }
                     if !retryable || attempt >= MAX_ATTEMPTS {
-                        return Err(e);
+                        return Err(PostError::Failed(e));
                     }
                     let backoff =
                         retry_after.unwrap_or_else(|| BASE_BACKOFF * 2u32.pow(attempt - 1));
@@ -150,15 +181,28 @@ impl AlertSink for SlackSink {
     }
 
     async fn send(&self, alert: &Alert) -> Result<(), AlertSinkError> {
-        self.post(alert).await
+        Ok(self.post(alert).await?)
     }
 
     async fn send_batch(&self, alerts: &[Alert]) -> Result<(), AlertSinkError> {
-        // No grouping: one message per alert.
         for alert in alerts {
             self.post(alert).await?;
         }
         Ok(())
+    }
+
+    // One message per alert, so each succeeds or fails on its own.
+    async fn send_each(&self, alerts: &[Alert], out: &mut [Delivery]) {
+        for (alert, slot) in alerts.iter().zip(out.iter_mut()) {
+            *slot = match self.post(alert).await {
+                Ok(()) => Delivery::Delivered,
+                Err(PostError::Deferred) => Delivery::Deferred,
+                Err(PostError::Failed(e)) => {
+                    warn!(sink = %self.id, rule = alert.rule.name, error = %e, "Slack alert not delivered");
+                    Delivery::Failed
+                }
+            };
+        }
     }
 }
 

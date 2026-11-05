@@ -4,6 +4,7 @@
 use crate::parser::StreamInput;
 use crate::rule::BuiltStreamRule;
 use domain::alert::{Alert, Severity};
+use domain::inflight::SlotHold;
 use observability::prometheus::metrics::record_grpc_event;
 use shipstern::{Handler, HandlerResult};
 use std::fmt;
@@ -50,7 +51,9 @@ impl<Ev: Send + Sync, R: StreamInput> Handler<Ev, R> for RuleHandler<Ev> {
         record_grpc_event(R::KIND.metric());
         let ctx = raw.stream_ctx();
         for rule in self.rules.iter() {
-            if let Some(alert) = (rule.evaluate)(value, &ctx) {
+            if let Some(mut alert) = (rule.evaluate)(value, &ctx) {
+                // Stream alerts only: a replay from the checkpoint can re-raise them.
+                alert.slot_hold = Some(SlotHold::new(ctx.slot));
                 forward_alert(
                     alert,
                     Some(ctx.slot),

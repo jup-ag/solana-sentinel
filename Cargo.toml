@@ -29,12 +29,13 @@ solana-sentinel-rules-registry = { path = "crates/rules-registry" }
 
 
 # Solana
+# Held on 3.x: rpc-client 4.x needs solana-pubkey ^4.3, shipstern 0.12 pins ~4.2.
 solana-pubkey = "3.0.0"
-solana-rpc-client = "3.0.0"
+solana-rpc-client = "3.1.14"
 solana-program-pack = "3.1.0"
 spl-token-interface = "3.0.0"
-solana-account-decoder-client-types = "3.0.0"
-solana-account = "3.0.0"
+solana-account-decoder-client-types = "3.1"
+solana-account = "3.4.0"
 
 ## Shipstern (formerly Yellowstone Vixen)
 shipstern = "0.12.0"
@@ -44,13 +45,13 @@ shipstern-proc-macro = "0.12.0"
 shipstern-spl-token-parser = "0.12.0"
 shipstern-slot-parser = "0.12.0"
 shipstern-yellowstone-grpc-source = "0.12.0"
-yellowstone-grpc-proto = { version = "12", default-features = false }
-prost = "0.14"
-clap = { version = "4", features = ["derive"] }
+yellowstone-grpc-proto = { version = "12.6", default-features = false }
+prost = "0.14.4"
+clap = { version = "4.6.7", features = ["derive"] }
 # Kafka source; ssl-vendored so SASL_SSL works without a system OpenSSL.
-rdkafka = { version = "0.39", features = ["tokio", "ssl-vendored"] }
+rdkafka = { version = "0.39.0", features = ["tokio", "ssl-vendored"] }
 
-tracing-subscriber = { version = "0.3.20", features = [
+tracing-subscriber = { version = "0.3.23", features = [
     "env-filter",
     "fmt",
     "json",
@@ -58,48 +59,49 @@ tracing-subscriber = { version = "0.3.20", features = [
 tracing = "0.1.44"
 
 # serialization
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0.150"
-borsh = { version = "1.6.1", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+borsh = { version = "1.8.1", features = ["derive"] }
 
 # async, db, metrics ..
-async-trait = "0.1.89"
-tokio = { version = "^1.0", features = ["full"] }
-tokio-util = { version = "0.7.15", features = ["rt"] }
-anyhow = "1.0"
-config = "0.15.11"
-rustls = { version = "0.23", default-features = false, features = [
+async-trait = "0.1.92"
+tokio = { version = "1.54.1", features = ["full"] }
+tokio-util = { version = "0.7.20", features = ["rt"] }
+anyhow = "1.0.104"
+config = "0.15.27"
+rustls = { version = "0.23.46", default-features = false, features = [
     "std",
     "aws-lc-rs",
 ] }
 bs58 = "0.5.1"
-bytemuck = "1.25.0"
-futures = "0.3.32"
-url = { version = "2.5.4", features = ["serde"] }
-chrono = { version = "0.4.44", features = ["serde"] }
-thiserror = "2.0.18"
-uuid = { version = "1.23.1", features = ["serde", "v4"] }
-clickhouse = { version = "0.15.0", features = [
+bytemuck = "1.25.2"
+futures = "0.3.34"
+url = { version = "2.5.8", features = ["serde"] }
+chrono = { version = "0.4.45", features = ["serde"] }
+thiserror = "2.0.21"
+uuid = { version = "1.29.0", features = ["serde", "v4"] }
+clickhouse = { version = "0.15.3", features = [
     "chrono",
     "uuid",
     "lz4",
     "rustls-tls",
 ] }
-klickhouse = { version = "0.15.2", features = ["refinery", "tls"] }
+klickhouse = { version = "0.16.0", features = ["refinery", "tls"] }
 refinery = { version = "0.9.1", features = ["tokio-postgres"] }
-reqwest = { version = "0.12", features = [
+reqwest = { version = "0.13.5", features = [
     "json",
-    "rustls-tls",
+    "query",
+    "rustls",
 ], default-features = false }
-parking_lot = "0.12.5"
+parking_lot = "0.13.0"
 axum = "0.8.9"
 prometheus = "0.14.0"
-tokio-rustls = "0.26.4"
-rustls-pki-types = "1.14.1"
-webpki-roots = "1.0.7"
-sha2 = "0.11.0"
+tokio-rustls = "0.26.6"
+rustls-pki-types = "1.15.1"
+webpki-roots = "1.0.11"
+sha2 = "0.11.1"
 hex = "0.4.3"
-redis = { version = "0.27.6", features = [
+redis = { version = "1.8.1", features = [
   "tokio-comp",
   "cluster",
   "cluster-async",

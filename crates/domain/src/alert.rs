@@ -1,3 +1,4 @@
+use crate::inflight::SlotHold;
 use crate::programs::Program;
 use crate::rules::RuleId;
 use chrono::{DateTime, Utc};
@@ -113,6 +114,8 @@ pub struct Alert {
     pub fleet_gate_key: DedupKey,
     pub scope: DedupScope,
     pub fired_at: DateTime<Utc>,
+    /// Keeps the slot checkpoint behind this alert until it is persisted; stream alerts only.
+    pub slot_hold: Option<SlotHold>,
 }
 
 impl Alert {
@@ -145,6 +148,7 @@ impl Alert {
             fleet_gate_key,
             scope,
             fired_at: Utc::now(),
+            slot_hold: None,
         }
     }
 

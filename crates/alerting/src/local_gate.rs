@@ -1,3 +1,4 @@
+use crate::claim::{self, OpenClaims};
 use domain::alert::Alert;
 use domain::rules::RuleId;
 use redis::aio::ConnectionManager;
@@ -11,6 +12,8 @@ pub struct LocalGate {
     periods: HashMap<RuleId, Duration>,
     conn: ConnectionManager,
     key_prefix: String,
+    owner: String,
+    open: OpenClaims,
 }
 
 impl LocalGate {
@@ -25,6 +28,8 @@ impl LocalGate {
             periods,
             conn: redis_conn,
             key_prefix: format!("{pod_id}:{namespace}:alerts:local_gate_key"),
+            owner: pod_id.to_string(),
+            open: OpenClaims::default(),
         }
     }
 
@@ -40,26 +45,23 @@ impl LocalGate {
             .timestamp()
             .saturating_add(period.as_secs() as i64);
 
-        let key = format!("{}:{}", self.key_prefix, alert.local_gate_key());
-        set_nx_exat(&mut self.conn, &key, ttl_timestamp).await
+        let key = self.key(alert);
+        claim::claim(&mut self.conn, &self.open, &key, &self.owner, ttl_timestamp).await
     }
-}
 
-/// `SET key "" NX EXAT ts`: `Some(())` means we set it (send), `None` means present (suppress).
-pub(crate) async fn set_nx_exat(
-    conn: &mut impl redis::aio::ConnectionLike,
-    key: &str,
-    ttl_timestamp: i64,
-) -> anyhow::Result<bool> {
-    let set: Option<()> = redis::cmd("SET")
-        .arg(key)
-        .arg("")
-        .arg("NX")
-        .arg("EXAT")
-        .arg(ttl_timestamp)
-        .query_async(conn)
-        .await?;
-    Ok(set.is_some())
+    pub async fn confirm(&mut self, alert: &Alert) -> anyhow::Result<()> {
+        let key = self.key(alert);
+        claim::confirm(&mut self.conn, &self.open, &key, &self.owner).await
+    }
+
+    pub async fn release(&mut self, alert: &Alert) -> anyhow::Result<()> {
+        let key = self.key(alert);
+        claim::release(&mut self.conn, &self.open, &key, &self.owner).await
+    }
+
+    fn key(&self, alert: &Alert) -> String {
+        format!("{}:{}", self.key_prefix, alert.local_gate_key())
+    }
 }
 
 #[cfg(test)]
@@ -132,12 +134,18 @@ mod tests {
     #[ignore = "needs Docker (testcontainers); run with --ignored"]
     async fn alert_sent_again_after_cooldown_expires() {
         let (conn, _c) = redis_conn().await;
-        let mut gate = LocalGate::new(conn, periods(Duration::from_secs(1)), "TEST_NODE", "test");
+        let mut gate = LocalGate::new(
+            conn.clone(),
+            periods(Duration::from_secs(1)),
+            "TEST_NODE",
+            "test",
+        );
 
         assert!(
             gate.check(&build_alert(0)).await.unwrap(),
             "first should send"
         );
+        gate.confirm(&build_alert(0)).await.unwrap();
         assert!(
             !gate.check(&build_alert(0)).await.unwrap(),
             "duplicate suppressed"
@@ -149,5 +157,10 @@ mod tests {
             gate.check(&build_alert(0)).await.unwrap(),
             "after cooldown expiry the same condition should send again"
         );
+
+        // That claim was never settled: a restarted process on the same pod takes it over.
+        let mut restarted =
+            LocalGate::new(conn, periods(Duration::from_secs(1)), "TEST_NODE", "test");
+        assert!(restarted.check(&build_alert(0)).await.unwrap());
     }
 }

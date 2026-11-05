@@ -29,8 +29,23 @@ pub async fn try_fetch_accounts_with_slot(
     pubkeys: &[Pubkey],
     config: Option<RpcAccountInfoConfig>,
 ) -> anyhow::Result<(HashMap<Pubkey, Account>, u64)> {
-    let mut accounts = HashMap::with_capacity(pubkeys.len());
-    let mut slot = 0;
+    let chunks = try_fetch_account_chunks(rpc, pubkeys, config).await?;
+    let slot = chunks.iter().map(|(slot, _)| *slot).max().unwrap_or(0);
+    let accounts = chunks
+        .into_iter()
+        .flat_map(|(_, accounts)| accounts)
+        .collect();
+    Ok((accounts, slot))
+}
+
+/// Like [`try_fetch_accounts_with_slot`], but keeps each chunk with the slot it was read at;
+/// seeding a state cache needs the real slot per account, not the newest across chunks.
+pub async fn try_fetch_account_chunks(
+    rpc: &RpcClient,
+    pubkeys: &[Pubkey],
+    config: Option<RpcAccountInfoConfig>,
+) -> anyhow::Result<Vec<(u64, HashMap<Pubkey, Account>)>> {
+    let mut chunks = Vec::with_capacity(pubkeys.len().div_ceil(BATCH_SIZE));
 
     let config = config.unwrap_or_else(|| RpcAccountInfoConfig {
         encoding: Some(UiAccountEncoding::Base64),
@@ -45,11 +60,12 @@ pub async fn try_fetch_accounts_with_slot(
                     .await
             })
             .await?;
-        slot = slot.max(response.context.slot);
+        let mut accounts = HashMap::with_capacity(chunk.len());
         collect_chunk(chunk, response.value, &mut accounts)?;
+        chunks.push((response.context.slot, accounts));
     }
 
-    Ok((accounts, slot))
+    Ok(chunks)
 }
 
 fn collect_chunk(
