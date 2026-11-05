@@ -4,6 +4,7 @@
 use crate::config::service::{BetterstackSinkConfig, ClickhouseConfig, SinkConfig, SlackConfig};
 use crate::config::{ProgramRules, SentinelConfig};
 use alerting::cooldown_gate::CooldownGate;
+use anyhow::Context;
 use alerting::fleet_gate::FleetGate;
 use alerting::local_gate::LocalGate;
 use alerting::router::Router;
@@ -166,8 +167,12 @@ async fn connect_to_redis_cluster(redis_url: &str) -> anyhow::Result<ClusterConn
         .connection_timeout(Duration::from_secs(2))
         .response_timeout(Duration::from_secs(1)) // per-attempt
         .retries(1)
-        .build()?;
-    Ok(client.get_async_connection().await?)
+        .build()
+        .context("Invalid Redis cluster URL")?;
+    client
+        .get_async_connection()
+        .await
+        .context("Failed to connect to Redis cluster")
 }
 
 type Routes = HashMap<RuleId, Vec<SinkId>>;

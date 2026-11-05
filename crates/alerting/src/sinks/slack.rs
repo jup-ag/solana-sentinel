@@ -64,7 +64,7 @@ impl SlackSink {
         let http_client = HttpClient::builder()
             .timeout(Duration::from_secs(timeout_seconds))
             .build()
-            .map_err(|e| AlertSinkError::SlackSinkError(Box::new(e)))?;
+            .map_err(|e| slack_err("failed to build HTTP client", e))?;
 
         Ok(Self {
             id,
@@ -98,7 +98,7 @@ impl SlackSink {
                     .json(&payload)
                     .send()
                     .await
-                    .map_err(|e| (AlertSinkError::SlackSinkError(Box::new(e)), true, None))?;
+                    .map_err(|e| (slack_err("chat.postMessage request failed", e), true, None))?;
 
                 // HTTP-level failures: 5xx and 429 are retryable and won't carry a
                 // valid SlackApiResponse body, so handle them before parsing.
@@ -119,7 +119,7 @@ impl SlackSink {
                 let body: SlackApiResponse = resp
                     .json()
                     .await
-                    .map_err(|e| (AlertSinkError::SlackSinkError(Box::new(e)), false, None))?;
+                    .map_err(|e| (slack_err("failed to decode chat.postMessage response", e), false, None))?;
 
                 if !body.ok {
                     let err = body
@@ -129,7 +129,8 @@ impl SlackSink {
                         err.as_str(),
                         "ratelimited" | "internal_error" | "service_unavailable" | "fatal_error"
                     );
-                    return Err((AlertSinkError::SlackSinkError(err.into()), retryable, None));
+                    let msg = format!("chat.postMessage to {} returned `{err}`", self.channel);
+                    return Err((AlertSinkError::SlackSinkError(msg.into()), retryable, None));
                 }
 
                 Ok(())
@@ -163,6 +164,11 @@ impl SlackSink {
             }
         }
     }
+}
+
+// Keeps the reqwest source chain (e.g. the connect/TLS cause), which its Display alone drops.
+fn slack_err(what: &str, e: reqwest::Error) -> AlertSinkError {
+    AlertSinkError::SlackSinkError(format!("{what}: {:#}", anyhow::Error::from(e)).into())
 }
 
 /// Parse the `Retry-After` header (delta-seconds form, per Slack's rate limiting).

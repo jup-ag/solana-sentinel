@@ -35,7 +35,7 @@ pub fn spawn_refresh_loops(
                     _ = cancel_token.cancelled() => break,
                     _ = tick.tick() => {
                         if let Err(e) = program.deps.refresh(&ctx).await {
-                            error!(program = %program.program, error = %e, "Deps refresh failed");
+                            error!(program = %program.program, error = format!("{e:#}"), "Deps refresh failed");
                             continue;
                         }
                         let dynamic = program.deps.dynamic_subscription();

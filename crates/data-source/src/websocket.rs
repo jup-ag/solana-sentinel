@@ -8,6 +8,7 @@ use crate::convert::{account_update, transaction_update};
 use crate::kafka::next_filters;
 use crate::matching::tx_matches;
 use crate::rpc::build_rpc_client;
+use anyhow::Context;
 use async_trait::async_trait;
 use futures::stream::{BoxStream, SelectAll};
 use futures::StreamExt;
@@ -91,9 +92,10 @@ impl WebsocketSource {
             ..
         } = ctx;
         let commitment = self.commitment()?;
-        let client = PubsubClient::new(&self.config.url)
-            .await
-            .map_err(|e| shipstern::Error::Other(Box::new(e)))?;
+        let client = PubsubClient::new(&self.config.url).await.map_err(|e| {
+            let msg = format!("Failed to connect to PubSub at {}: {e}", self.config.url);
+            shipstern::Error::Other(msg.into())
+        })?;
         info!(url = %self.config.url, "PubSub connected");
 
         let mut streams: SelectAll<BoxStream<'_, Event>> = SelectAll::new();
@@ -101,7 +103,7 @@ impl WebsocketSource {
         let mut current = filters;
         self.subscribe(&client, &current, commitment, &mut opened, &mut streams)
             .await
-            .map_err(|e| shipstern::Error::Other(e.into()))?;
+            .map_err(|e| shipstern::Error::Other(format!("{e:#}").into()))?;
         let mut seen: VecDeque<String> = VecDeque::with_capacity(SEEN_SIGNATURES);
 
         loop {
@@ -109,7 +111,7 @@ impl WebsocketSource {
                 Some(next) = next_filters(&mut filter_updates) => {
                     current = next;
                     if let Err(e) = self.subscribe(&client, &current, commitment, &mut opened, &mut streams).await {
-                        warn!(error = %e, "Failed to apply filter update");
+                        warn!(error = format!("{e:#}"), "Failed to apply filter update");
                     }
                 }
                 event = streams.next() => {
@@ -204,7 +206,8 @@ impl WebsocketSource {
                     }
                     let (stream, _unsub) = client
                         .account_subscribe(&pubkey, Some(account_config.clone()))
-                        .await?;
+                        .await
+                        .with_context(|| format!("accountSubscribe failed for {pubkey}"))?;
                     let filter = name.to_string();
                     streams.push(
                         stream
@@ -228,7 +231,10 @@ impl WebsocketSource {
                         with_context: None,
                         sort_results: None,
                     };
-                    let (stream, _unsub) = client.program_subscribe(&owner, Some(config)).await?;
+                    let (stream, _unsub) = client
+                        .program_subscribe(&owner, Some(config))
+                        .await
+                        .with_context(|| format!("programSubscribe failed for {owner}"))?;
                     let filter = name.to_string();
                     streams.push(
                         stream
@@ -262,7 +268,8 @@ impl WebsocketSource {
                                 commitment: Some(commitment),
                             },
                         )
-                        .await?;
+                        .await
+                        .with_context(|| format!("logsSubscribe failed for {pubkey}"))?;
                     streams.push(
                         stream
                             .map(|r| Event::Logs {
@@ -275,7 +282,10 @@ impl WebsocketSource {
             }
             if prefilter.slot.is_some() && !opened.slots {
                 opened.slots = true;
-                let (stream, _unsub) = client.slot_subscribe().await?;
+                let (stream, _unsub) = client
+                    .slot_subscribe()
+                    .await
+                    .context("slotSubscribe failed")?;
                 streams.push(stream.map(Event::Slot).boxed());
             }
         }

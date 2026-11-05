@@ -41,7 +41,7 @@ impl CooldownGate {
                     record_alert_suppressed(alert.rule.name);
                     return false;
                 }
-                Err(e) => error!("Failed to check local gate: {e}"),
+                Err(e) => error!("Failed to check local gate: {e:#}"),
             }
         }
 
@@ -54,12 +54,12 @@ impl CooldownGate {
                     // Settle the local claim, or it stays open and blocks every later occurrence.
                     if let Some(local) = &mut self.local_gate {
                         if let Err(e) = local.release(alert).await {
-                            error!("Failed to release local gate claim: {e}");
+                            error!("Failed to release local gate claim: {e:#}");
                         }
                     }
                     return false;
                 }
-                Err(e) => error!("Failed to check fleet gate: {e}"),
+                Err(e) => error!("Failed to check fleet gate: {e:#}"),
             }
         }
 
@@ -70,12 +70,12 @@ impl CooldownGate {
     pub async fn confirm(&mut self, alert: &Alert) {
         if let Some(gate) = &mut self.local_gate {
             if let Err(e) = gate.confirm(alert).await {
-                error!("Failed to confirm local gate claim: {e}");
+                error!("Failed to confirm local gate claim: {e:#}");
             }
         }
         if let Some(gate) = &mut self.fleet_gate {
             if let Err(e) = gate.confirm(alert).await {
-                error!("Failed to confirm fleet gate claim: {e}");
+                error!("Failed to confirm fleet gate claim: {e:#}");
             }
         }
     }
@@ -84,12 +84,12 @@ impl CooldownGate {
     pub async fn release(&mut self, alert: &Alert) {
         if let Some(gate) = &mut self.local_gate {
             if let Err(e) = gate.release(alert).await {
-                error!("Failed to release local gate claim: {e}");
+                error!("Failed to release local gate claim: {e:#}");
             }
         }
         if let Some(gate) = &mut self.fleet_gate {
             if let Err(e) = gate.release(alert).await {
-                error!("Failed to release fleet gate claim: {e}");
+                error!("Failed to release fleet gate claim: {e:#}");
             }
         }
     }

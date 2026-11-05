@@ -15,6 +15,7 @@ use crate::rule_set::{PollRules, StreamRules, ValidatedPoll, ValidatedStream};
 use crate::subscription::Subscription;
 use crate::sweep::spawn_sweep_loops;
 use crate::{BootstrapCtx, RawRuleMap};
+use anyhow::Context;
 use async_trait::async_trait;
 use domain::alert::Alert;
 use domain::programs::Program;
@@ -450,7 +451,10 @@ impl ValidatedProgram {
     /// Bootstrap deps, then every rule; build the stream pipelines and spawn poll / sweep loops.
     pub async fn start(self, ctx: &StartCtx<'_>) -> anyhow::Result<StartedProgram> {
         let started = tokio::time::Instant::now();
-        let deps = Deps((self.deps)(&ctx.bootstrap).await?);
+        let deps = (self.deps)(&ctx.bootstrap)
+            .await
+            .with_context(|| format!("Failed to bootstrap deps for program {}", self.program))?;
+        let deps = Deps(deps);
         let mut out = StartedProgram {
             program: self.program,
             deps: Arc::clone(&deps.0),

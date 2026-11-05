@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use config::{Config, File, FileFormat};
 use domain::sinks::SinkId;
 use observability::HeartbeatSettings;
@@ -221,8 +221,9 @@ impl ServiceConfig {
         let path = std::env::var("CONFIG_FILE").unwrap_or_else(|_| "./config.toml".into());
         let cfg = Config::builder()
             .add_source(File::new(&path, FileFormat::Toml).required(true))
-            .build()?
-            .try_deserialize::<Self>()?;
+            .build()
+            .and_then(Config::try_deserialize::<Self>)
+            .with_context(|| format!("failed to load service config `{path}`"))?;
         Ok(cfg)
     }
 }

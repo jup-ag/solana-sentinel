@@ -119,12 +119,14 @@ async fn recv_sigterm(_: &mut SigTerm) {
 
 /// Connects to Redis with a timeout and retry configuration.
 pub async fn connect_to_redis(redis_url: &str) -> anyhow::Result<ConnectionManager> {
-    let client = redis::Client::open(redis_url)?;
+    let client = redis::Client::open(redis_url).context("Invalid Redis URL")?;
     let cfg = ConnectionManagerConfig::new()
         .set_connection_timeout(Some(Duration::from_secs(2)))
         .set_response_timeout(Some(Duration::from_secs(1)))
         .set_number_of_retries(3);
-    let conn = ConnectionManager::new_with_config(client, cfg).await?;
+    let conn = ConnectionManager::new_with_config(client, cfg)
+        .await
+        .context("Failed to connect to Redis")?;
     Ok(conn)
 }
 

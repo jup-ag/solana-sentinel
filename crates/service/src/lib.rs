@@ -15,6 +15,7 @@ use crate::utils::{
 };
 pub use crate::utils::{setup_crypto_provider, setup_tracing_subscriber};
 use crate::validate::validate_programs;
+use anyhow::Context;
 use alerting::outbox::Outbox;
 use alerting::service::AlertingService;
 use data_source::rpc::build_rpc_client;
@@ -72,7 +73,9 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
     let (router, cooldowns) = wiring::build_alerting_router(&config, &programs)?;
 
     // Sidecar Redis holds per-pod state (slot checkpoint, local gate);
-    let redis_sidecar_conn = connect_to_redis(&config.redis().redis_sidecar_url).await?;
+    let redis_sidecar_conn = connect_to_redis(&config.redis().redis_sidecar_url)
+        .await
+        .context("Sidecar Redis unavailable")?;
 
     let cooldown_gate = wiring::build_cooldown_gate(
         &config,
@@ -81,7 +84,8 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
         &pod_id,
         opts.service_name,
     )
-    .await?;
+    .await
+    .context("Failed to build cooldown gate")?;
 
     let outbox = Outbox::new(redis_sidecar_conn.clone(), &pod_id, opts.service_name);
 
@@ -94,7 +98,8 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
         &tracker,
         matches!(config.data_source(), DataSourceConfig::YellowstoneGrpc(_)),
     )
-    .await?;
+    .await
+    .context("Failed to initialize slot tracker")?;
 
     // Up before bootstrap, so a slow RPC warm-up doesn't fail the liveness probe;
     // a stream that never delivers is caught by the slot tracker's stall watchdog.
@@ -122,7 +127,7 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
     );
     // Bootstrap can take minutes of RPC; a shutdown during it skips straight to the drain.
     tokio::select! {
-        started = consumer_service.start(&tracker) => started?,
+        started = consumer_service.start(&tracker) => started.context("Failed to start consumer")?,
         () = cancel_token.cancelled() => warn!("Shutdown requested during startup"),
     }
 

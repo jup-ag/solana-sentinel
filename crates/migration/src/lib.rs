@@ -1,3 +1,4 @@
+use anyhow::Context;
 use klickhouse::{Client as KlickhouseClient, ClientOptions};
 use refinery::embed_migrations;
 use std::env;
@@ -48,15 +49,24 @@ pub async fn migrate() -> anyhow::Result<()> {
             .next()
             .expect("CLICKHOUSE_HOST must contain a hostname")
             .to_owned();
-        let server_name = rustls_pki_types::ServerName::try_from(hostname)?; // owns the string -> 'static
+        // owns the string -> 'static
+        let server_name = rustls_pki_types::ServerName::try_from(hostname)
+            .context("Invalid TLS server name in CLICKHOUSE_HOST")?;
 
-        KlickhouseClient::connect_tls(host_with_port, opts, server_name, &connector).await?
+        KlickhouseClient::connect_tls(&host_with_port, opts, server_name, &connector)
+            .await
+            .with_context(|| format!("Failed to connect to ClickHouse (TLS) at {host_with_port}"))?
     } else {
         info!("Connecting to ClickHouse (plaintext) at {}", host_with_port);
-        KlickhouseClient::connect(host_with_port, opts).await?
+        KlickhouseClient::connect(&host_with_port, opts)
+            .await
+            .with_context(|| format!("Failed to connect to ClickHouse at {host_with_port}"))?
     };
 
-    let report = migrations::runner().run_async(&mut client).await?;
+    let report = migrations::runner()
+        .run_async(&mut client)
+        .await
+        .context("Failed to run ClickHouse migrations")?;
 
     info!(
         "Applied {} ClickHouse migrations",
