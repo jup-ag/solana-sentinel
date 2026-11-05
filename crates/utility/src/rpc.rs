@@ -82,14 +82,14 @@ fn collect_chunk(
         let acc_data = account
             .data
             .decode()
-            .with_context(|| "failed to retrieve account data bytes")?;
+            .with_context(|| format!("failed to decode account data for {pubkey}"))?;
 
         accounts.insert(
             *pubkey,
             Account {
                 lamports: account.lamports,
                 owner: Pubkey::from_str(&account.owner)
-                    .with_context(|| "failed to parse owner pubkey")?,
+                    .with_context(|| format!("failed to parse owner pubkey of {pubkey}"))?,
                 executable: account.executable,
                 rent_epoch: account.rent_epoch,
                 data: acc_data,

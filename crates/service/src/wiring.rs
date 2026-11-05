@@ -12,6 +12,7 @@ use alerting::sinks::clickhouse::ClickhouseSink;
 use alerting::sinks::slack::SlackSink;
 use alerting::sinks::stdout::StdoutSink;
 use alerting::sinks::{AlertSink, AlertSinkError};
+use anyhow::Context;
 use domain::programs::Program;
 use domain::rules::RuleId;
 use domain::sinks::SinkId;
@@ -166,8 +167,12 @@ async fn connect_to_redis_cluster(redis_url: &str) -> anyhow::Result<ClusterConn
         .connection_timeout(Duration::from_secs(2))
         .response_timeout(Duration::from_secs(1)) // per-attempt
         .retries(1)
-        .build()?;
-    Ok(client.get_async_connection().await?)
+        .build()
+        .context("Invalid Redis cluster URL")?;
+    client
+        .get_async_connection()
+        .await
+        .context("Failed to connect to Redis cluster")
 }
 
 type Routes = HashMap<RuleId, Vec<SinkId>>;

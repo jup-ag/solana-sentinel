@@ -1,4 +1,5 @@
 use crate::sinks::{AlertSink, AlertSinkError, Delivery};
+use anyhow::Context;
 use async_trait::async_trait;
 use domain::alert::{Alert, Severity};
 use domain::sinks::SinkId;
@@ -41,13 +42,18 @@ async fn has_open_incident(
             (metadata_filter.as_str(), dedup_key),
         ])
         .send()
-        .await?;
+        .await
+        .context("BetterStack incident lookup request failed")?;
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
         anyhow::bail!("BetterStack incident lookup failed: HTTP {status}: {text}");
     }
-    Ok(!resp.json::<IncidentList>().await?.data.is_empty())
+    let list = resp
+        .json::<IncidentList>()
+        .await
+        .context("Failed to decode BetterStack incident lookup response")?;
+    Ok(!list.data.is_empty())
 }
 
 /// Per-incident data. The common fields (`requester_email`, `policy_id`) are
@@ -118,11 +124,12 @@ async fn report_incident(
                 .json(&body)
                 .send()
                 .await;
-            let Ok(resp) = resp else {
-                return Err((
-                    anyhow::anyhow!("BetterStack incident create failed: no response"),
-                    true,
-                ));
+            let resp = match resp {
+                Ok(resp) => resp,
+                Err(e) => {
+                    let err = anyhow::Error::from(e).context("BetterStack incident create failed");
+                    return Err((err, true));
+                }
             };
             let status = resp.status();
             if status.is_success() {
@@ -147,7 +154,7 @@ async fn report_incident(
                 warn!(
                     attempt,
                     max_attempts = MAX_ATTEMPTS,
-                    error = %err,
+                    error = format!("{err:#}"),
                     backoff_ms = backoff.as_millis(),
                     "BetterStack incident create failed, retrying"
                 );
@@ -177,8 +184,11 @@ impl BetterstackSink {
         Ok(Self {
             id,
             client: Client::new(),
-            incident_api_url: Url::parse(incident_api_url)
-                .map_err(|e| AlertSinkError::BetterStackSinkError(e.to_string()))?,
+            incident_api_url: Url::parse(incident_api_url).map_err(|e| {
+                AlertSinkError::BetterStackSinkError(format!(
+                    "invalid incident_api_url `{incident_api_url}`: {e}"
+                ))
+            })?,
             incident_auth_token,
             escalation_policy_id,
             requester_email,
@@ -230,7 +240,9 @@ impl AlertSink for BetterstackSink {
                 return Ok(());
             }
             Ok(false) => {}
-            Err(err) => warn!(error = %err, %dedup_key, "BetterStack open-incident check failed"),
+            Err(err) => {
+                warn!(error = format!("{err:#}"), %dedup_key, "BetterStack open-incident check failed")
+            }
         }
         let payload = Self::payload_from_alert(alert.clone(), dedup_key);
         report_incident(
@@ -242,7 +254,7 @@ impl AlertSink for BetterstackSink {
             &self.requester_email,
         )
         .await
-        .map_err(|e| AlertSinkError::BetterStackSinkError(e.to_string()))
+        .map_err(|e| AlertSinkError::BetterStackSinkError(format!("{e:#}")))
     }
 
     async fn send_batch(&self, alerts: &[Alert]) -> Result<(), AlertSinkError> {

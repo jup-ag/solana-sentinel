@@ -5,6 +5,7 @@
 //! each is matched locally; slot updates are synthesized from record slots.
 
 use crate::matching::match_update;
+use anyhow::Context;
 use async_trait::async_trait;
 use prost::Message;
 use rdkafka::config::ClientConfig;
@@ -69,9 +70,13 @@ impl KafkaSource {
         for (k, v) in &c.properties {
             config.set(k, v);
         }
-        let consumer: StreamConsumer = config.create()?;
+        let consumer: StreamConsumer = config
+            .create()
+            .with_context(|| format!("Failed to create Kafka consumer for {}", c.brokers))?;
         let topics: Vec<&str> = c.topics.iter().map(String::as_str).collect();
-        consumer.subscribe(&topics)?;
+        consumer
+            .subscribe(&topics)
+            .with_context(|| format!("Failed to subscribe to Kafka topics {topics:?}"))?;
         Ok(consumer)
     }
 
@@ -84,7 +89,7 @@ impl KafkaSource {
         } = ctx;
         let consumer = self
             .consumer()
-            .map_err(|e| shipstern::Error::Other(e.into()))?;
+            .map_err(|e| shipstern::Error::Other(format!("{e:#}").into()))?;
         info!(
             brokers = %self.config.brokers,
             topics = ?self.config.topics,

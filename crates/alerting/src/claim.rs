@@ -2,6 +2,7 @@
 //! A claim holds its owner until confirmed; a failed delivery releases it, and a restarted
 //! process takes over its own unconfirmed claims, which it never finished delivering.
 
+use anyhow::Context;
 use parking_lot::Mutex;
 use redis::aio::ConnectionLike;
 use std::collections::HashSet;
@@ -46,12 +47,17 @@ async fn try_claim(
         .arg("EXAT")
         .arg(ttl_timestamp)
         .query_async(conn)
-        .await?;
+        .await
+        .with_context(|| format!("Failed to claim gate key {key} in Redis"))?;
     if set.is_some() {
         return Ok(true);
     }
     // Ours but not open in this process: an earlier run claimed it and died before settling.
-    let holder: Option<String> = redis::cmd("GET").arg(key).query_async(conn).await?;
+    let holder: Option<String> = redis::cmd("GET")
+        .arg(key)
+        .query_async(conn)
+        .await
+        .with_context(|| format!("Failed to read claim holder of {key} from Redis"))?;
     if holder.as_deref() == Some(owner) {
         info!(key, "taking over an unconfirmed claim from a previous run");
         return Ok(true);
@@ -91,7 +97,8 @@ pub(crate) async fn confirm(
         .arg(owner)
         .arg(DELIVERED)
         .query_async::<redis::Value>(conn)
-        .await?;
+        .await
+        .with_context(|| format!("Failed to confirm claim {key} in Redis"))?;
     Ok(())
 }
 
@@ -111,6 +118,7 @@ pub(crate) async fn release(
         .arg(key)
         .arg(owner)
         .query_async::<redis::Value>(conn)
-        .await?;
+        .await
+        .with_context(|| format!("Failed to release claim {key} in Redis"))?;
     Ok(())
 }

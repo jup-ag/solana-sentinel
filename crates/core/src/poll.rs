@@ -80,7 +80,7 @@ pub fn spawn_poll_loop<S: PollSource>(
                     let (items, ctx) = match source.poll(&rpc, &accounts).await {
                         Ok(polled) => polled,
                         Err(e) => {
-                            error!(program = %program, error = %e, "Poll fetch failed");
+                            error!(program = %program, error = format!("{e:#}"), "Poll fetch failed");
                             continue;
                         }
                     };

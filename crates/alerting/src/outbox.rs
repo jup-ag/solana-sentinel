@@ -4,6 +4,7 @@
 
 use crate::router::Router;
 use crate::service::Pending;
+use anyhow::Context;
 use chrono::{DateTime, Utc};
 use domain::alert::{Alert, DedupKey, DedupScope, Severity};
 use redis::aio::ConnectionManager;
@@ -57,9 +58,13 @@ impl Outbox {
     }
 
     pub(crate) async fn put(&mut self, pending: &Pending) -> anyhow::Result<()> {
-        let json = serde_json::to_string(&Record::from(pending))?;
         let id = pending.alert.id.to_string();
-        self.conn.hset::<_, _, _, ()>(&self.key, id, json).await?;
+        let json = serde_json::to_string(&Record::from(pending))
+            .with_context(|| format!("Failed to serialize outbox record {id}"))?;
+        self.conn
+            .hset::<_, _, _, ()>(&self.key, &id, json)
+            .await
+            .with_context(|| format!("Failed to write outbox record {id} to Redis"))?;
         Ok(())
     }
 
@@ -67,7 +72,8 @@ impl Outbox {
     pub(crate) async fn park(&mut self, id: Uuid, due_ms: i64) -> anyhow::Result<()> {
         self.conn
             .zadd::<_, _, _, ()>(&self.parked_key, id.to_string(), due_ms)
-            .await?;
+            .await
+            .with_context(|| format!("Failed to park outbox record {id} in Redis"))?;
         Ok(())
     }
 
@@ -78,14 +84,19 @@ impl Outbox {
             .hdel(&self.key, &id)
             .zrem(&self.parked_key, &id)
             .query_async::<()>(&mut self.conn)
-            .await?;
+            .await
+            .with_context(|| format!("Failed to remove outbox record {id} from Redis"))?;
         Ok(())
     }
 
     /// Parks everything a previous run left (resident or parked) as due now, skipping this
     /// run's own alerts in `ours`; returns how many.
     pub(crate) async fn adopt_all(&mut self, ours: &HashSet<Uuid>) -> anyhow::Result<usize> {
-        let ids: Vec<String> = self.conn.hkeys(&self.key).await?;
+        let ids: Vec<String> = self
+            .conn
+            .hkeys(&self.key)
+            .await
+            .with_context(|| format!("Failed to list outbox records in {}", self.key))?;
         let ids: Vec<String> = ids
             .into_iter()
             .filter(|id| Uuid::parse_str(id).map_or(true, |id| !ours.contains(&id)))
@@ -94,7 +105,8 @@ impl Outbox {
             let members: Vec<(i64, &String)> = chunk.iter().map(|id| (0, id)).collect();
             self.conn
                 .zadd_multiple::<_, _, _, ()>(&self.parked_key, &members)
-                .await?;
+                .await
+                .context("Failed to park adopted outbox records in Redis")?;
         }
         Ok(ids.len())
     }
@@ -110,7 +122,8 @@ impl Outbox {
         let ids: Vec<String> = self
             .conn
             .zrangebyscore_limit(&self.parked_key, "-inf", now_ms, 0, limit as isize)
-            .await?;
+            .await
+            .context("Failed to read due outbox records from Redis")?;
         if ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -118,7 +131,8 @@ impl Outbox {
             .arg(&self.key)
             .arg(&ids)
             .query_async(&mut self.conn)
-            .await?;
+            .await
+            .context("Failed to fetch due outbox records from Redis")?;
         let mut out = Vec::with_capacity(ids.len());
         for (id, json) in ids.iter().zip(records) {
             let restored = Uuid::parse_str(id)
@@ -129,12 +143,18 @@ impl Outbox {
                 Some(pending) => out.push(pending),
                 None => {
                     warn!(%id, "Dropping unrestorable outbox record");
-                    self.conn.hdel::<_, _, ()>(&self.key, id).await?;
+                    self.conn
+                        .hdel::<_, _, ()>(&self.key, id)
+                        .await
+                        .with_context(|| format!("Failed to drop outbox record {id} from Redis"))?;
                 }
             }
         }
         // Resident from here; a crash before settling leaves the record for `adopt_all`.
-        self.conn.zrem::<_, _, ()>(&self.parked_key, &ids).await?;
+        self.conn
+            .zrem::<_, _, ()>(&self.parked_key, &ids)
+            .await
+            .context("Failed to unpark due outbox records in Redis")?;
         Ok(out)
     }
 }

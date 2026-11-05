@@ -241,7 +241,7 @@ impl Dispatcher {
                     );
                     self.adopted = true;
                 }
-                Err(e) => error!("Failed to load the alert outbox; retrying: {e}"),
+                Err(e) => error!("Failed to load the alert outbox; retrying: {e:#}"),
             }
         }
         let room = self.buffer_capacity.saturating_sub(self.buffer.len());
@@ -254,7 +254,7 @@ impl Dispatcher {
         {
             Ok(due) => due,
             Err(e) => {
-                error!("Failed to load parked alerts: {e}");
+                error!("Failed to load parked alerts: {e:#}");
                 return;
             }
         };
@@ -438,7 +438,7 @@ impl Dispatcher {
             }
             Err(e) => error!(
                 rule = pending.alert.rule.name,
-                "Failed to persist alert to the outbox: {e}"
+                "Failed to persist alert to the outbox: {e:#}"
             ),
         }
     }
@@ -458,7 +458,10 @@ impl Dispatcher {
                 true
             }
             Err(e) => {
-                error!(rule = pending.alert.rule.name, "Failed to park alert: {e}");
+                error!(
+                    rule = pending.alert.rule.name,
+                    "Failed to park alert: {e:#}"
+                );
                 false
             }
         }
@@ -467,7 +470,7 @@ impl Dispatcher {
     async fn forget(&mut self, id: Uuid) {
         if let Some(outbox) = &mut self.outbox {
             if let Err(e) = outbox.remove(id).await {
-                error!(%id, "Failed to remove alert from the outbox: {e}");
+                error!(%id, "Failed to remove alert from the outbox: {e:#}");
             }
         }
     }
