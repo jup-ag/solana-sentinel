@@ -17,9 +17,9 @@ pub use crate::utils::{setup_crypto_provider, setup_tracing_subscriber};
 use crate::validate::validate_programs;
 use alerting::outbox::Outbox;
 use alerting::service::AlertingService;
+use data_source::rpc::build_rpc_client;
 use observability::slot_tracker::SlotTracker;
 use observability::{prometheus, run_observability_stack};
-use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sentinel::{ProgramSpec, ValidatedProgram};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -60,7 +60,10 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
     let cancel_token = CancellationToken::new();
     let signalled = listen_for_shutdown_signal(&cancel_token);
     let tracker = TaskTracker::new();
-    let rpc = Arc::new(RpcClient::new(config.rpc().url.to_string()));
+    let rpc = Arc::new(build_rpc_client(
+        config.rpc().url.as_str(),
+        &config.rpc().headers,
+    )?);
 
     // Extract the pod ID from the environment (hostname) for use in Redis keys as a namespace
     let pod_id = extract_pod_id()?;

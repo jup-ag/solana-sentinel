@@ -139,6 +139,7 @@ impl ConsumerService {
                 WebsocketConfig {
                     url: c.url.clone(),
                     rpc_url: config.rpc().url.to_string(),
+                    rpc_headers: config.rpc().headers.clone(),
                     commitment: c.commitment.clone(),
                 },
                 &c.buffer,

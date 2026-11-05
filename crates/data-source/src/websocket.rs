@@ -7,6 +7,7 @@
 use crate::convert::{account_update, transaction_update};
 use crate::kafka::next_filters;
 use crate::matching::tx_matches;
+use crate::rpc::build_rpc_client;
 use async_trait::async_trait;
 use futures::stream::{BoxStream, SelectAll};
 use futures::StreamExt;
@@ -28,7 +29,7 @@ use solana_rpc_client_api::filter::{Memcmp, RpcFilterType};
 use solana_rpc_client_api::response::SlotInfo;
 use solana_signature::Signature;
 use solana_transaction_status_client_types::UiTransactionEncoding;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::str::FromStr;
 use std::time::Duration;
 use tracing::{debug, info, warn};
@@ -48,6 +49,10 @@ pub struct WebsocketConfig {
     /// JSON-RPC endpoint for `getTransaction` on each log notification.
     #[arg(long)]
     pub rpc_url: String,
+    /// Sent on every `rpc_url` request.
+    #[serde(default)]
+    #[arg(skip)]
+    pub rpc_headers: HashMap<String, String>,
     /// `confirmed` or `finalized`; `processed` cannot serve `getTransaction`.
     #[arg(long, default_value = "confirmed")]
     pub commitment: String,
@@ -139,7 +144,9 @@ impl FromConfig for WebsocketSource {
     type Config = WebsocketConfig;
 
     fn from_config(config: Self::Config) -> Self {
-        let rpc = RpcClient::new(config.rpc_url.clone());
+        // Headers are validated at service startup, before any source is built.
+        let rpc = build_rpc_client(&config.rpc_url, &config.rpc_headers)
+            .expect("rpc headers were validated at startup");
         Self { config, rpc }
     }
 }
