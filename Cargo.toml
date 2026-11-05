@@ -93,6 +93,8 @@ reqwest = { version = "0.13.5", features = [
     "query",
     "rustls",
 ], default-features = false }
+# solana-rpc-client's HttpSender takes this major's Client; only used to set RPC headers.
+reqwest-rpc = { package = "reqwest", version = "0.12", default-features = false }
 parking_lot = "0.13.0"
 axum = "0.8.9"
 prometheus = "0.14.0"

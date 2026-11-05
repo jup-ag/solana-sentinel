@@ -118,8 +118,10 @@ pub struct KafkaSourceConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct RpcConfig {
     pub url: Url,
-    /// Optional `x-identity` header on every RPC request, so a shared provider can attribute traffic.
-    pub identity: Option<String>,
+    /// Extra headers on every RPC request, e.g. `x-identity` so a shared provider
+    /// can attribute traffic, or an auth header.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
