@@ -33,8 +33,9 @@ sources_channel_size = 10000
 # RPC endpoint for on-demand queries (e.g. fetching account data).
 [rpc]
 url = "https://api.mainnet-beta.solana.com"
-# Optional: sent as the x-identity header on every RPC request.
-# identity = "sentinel"
+# Optional: headers sent on every RPC request (traffic attribution, auth).
+# [rpc.headers]
+# x-identity = "sentinel"
 
 # Observability configuration.
 [observability.server]

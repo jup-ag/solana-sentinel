@@ -5259,6 +5259,7 @@ dependencies = [
  "futures",
  "prost",
  "rdkafka",
+ "reqwest 0.12.28",
  "serde",
  "shipstern",
  "shipstern-core",

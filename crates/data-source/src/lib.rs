@@ -8,6 +8,7 @@
 pub mod convert;
 pub mod kafka;
 pub mod matching;
+pub mod rpc;
 pub mod websocket;
 
 pub use kafka::{KafkaConfig, KafkaSource};
