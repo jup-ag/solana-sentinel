@@ -184,12 +184,11 @@ impl BetterstackSink {
         Ok(Self {
             id,
             client: Client::new(),
-            incident_api_url: Url::parse(incident_api_url)
-                .map_err(|e| {
-                    AlertSinkError::BetterStackSinkError(format!(
-                        "invalid incident_api_url `{incident_api_url}`: {e}"
-                    ))
-                })?,
+            incident_api_url: Url::parse(incident_api_url).map_err(|e| {
+                AlertSinkError::BetterStackSinkError(format!(
+                    "invalid incident_api_url `{incident_api_url}`: {e}"
+                ))
+            })?,
             incident_auth_token,
             escalation_policy_id,
             requester_email,
@@ -241,7 +240,9 @@ impl AlertSink for BetterstackSink {
                 return Ok(());
             }
             Ok(false) => {}
-            Err(err) => warn!(error = format!("{err:#}"), %dedup_key, "BetterStack open-incident check failed"),
+            Err(err) => {
+                warn!(error = format!("{err:#}"), %dedup_key, "BetterStack open-incident check failed")
+            }
         }
         let payload = Self::payload_from_alert(alert.clone(), dedup_key);
         report_incident(

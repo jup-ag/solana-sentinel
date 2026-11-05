@@ -116,10 +116,13 @@ impl SlackSink {
                 // status is in the JSON body `ok` field. By this point the message has
                 // already been accepted by Slack, so a body-read failure is NOT retried
                 // — retrying would risk double-posting a non-idempotent message.
-                let body: SlackApiResponse = resp
-                    .json()
-                    .await
-                    .map_err(|e| (slack_err("failed to decode chat.postMessage response", e), false, None))?;
+                let body: SlackApiResponse = resp.json().await.map_err(|e| {
+                    (
+                        slack_err("failed to decode chat.postMessage response", e),
+                        false,
+                        None,
+                    )
+                })?;
 
                 if !body.ok {
                     let err = body

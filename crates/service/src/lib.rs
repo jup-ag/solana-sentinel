@@ -15,9 +15,9 @@ use crate::utils::{
 };
 pub use crate::utils::{setup_crypto_provider, setup_tracing_subscriber};
 use crate::validate::validate_programs;
-use anyhow::Context;
 use alerting::outbox::Outbox;
 use alerting::service::AlertingService;
+use anyhow::Context;
 use data_source::rpc::build_rpc_client;
 use observability::slot_tracker::SlotTracker;
 use observability::{prometheus, run_observability_stack};

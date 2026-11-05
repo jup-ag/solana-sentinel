@@ -4,7 +4,6 @@
 use crate::config::service::{BetterstackSinkConfig, ClickhouseConfig, SinkConfig, SlackConfig};
 use crate::config::{ProgramRules, SentinelConfig};
 use alerting::cooldown_gate::CooldownGate;
-use anyhow::Context;
 use alerting::fleet_gate::FleetGate;
 use alerting::local_gate::LocalGate;
 use alerting::router::Router;
@@ -13,6 +12,7 @@ use alerting::sinks::clickhouse::ClickhouseSink;
 use alerting::sinks::slack::SlackSink;
 use alerting::sinks::stdout::StdoutSink;
 use alerting::sinks::{AlertSink, AlertSinkError};
+use anyhow::Context;
 use domain::programs::Program;
 use domain::rules::RuleId;
 use domain::sinks::SinkId;

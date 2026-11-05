@@ -458,7 +458,10 @@ impl Dispatcher {
                 true
             }
             Err(e) => {
-                error!(rule = pending.alert.rule.name, "Failed to park alert: {e:#}");
+                error!(
+                    rule = pending.alert.rule.name,
+                    "Failed to park alert: {e:#}"
+                );
                 false
             }
         }
