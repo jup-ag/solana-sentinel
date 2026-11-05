@@ -6,7 +6,7 @@ use chrono::Utc;
 use domain::alert::Alert;
 use domain::sinks::SinkId;
 use observability::prometheus::metrics::record_alert;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -58,6 +58,7 @@ impl AlertingService {
         }
     }
 
+    /// Alerts held in memory; beyond it, persisted alerts wait in the outbox instead.
     pub fn with_buffer_capacity(mut self, n: usize) -> Self {
         self.buffer_capacity = n.max(1);
         self
@@ -85,7 +86,7 @@ impl AlertingService {
             router,
             cooldown_gate,
             outbox,
-            mut alerts_rx,
+            alerts_rx,
             cancel_token,
             buffer_capacity,
             flush_interval,
@@ -103,7 +104,8 @@ impl AlertingService {
                 "Starting alerting service",
             );
 
-            // Fires SHUTDOWN_DRAIN_TIMEOUT after cancellation, also cutting a flush already running.
+            // Fires SHUTDOWN_DRAIN_TIMEOUT after cancellation and cuts the whole loop, Redis
+            // calls included. Safe to drop anywhere: what isn't settled stays in the outbox.
             let hard_stop = CancellationToken::new();
             tokio::spawn({
                 let (cancel, hard_stop) = (cancel_token.clone(), hard_stop.clone());
@@ -119,61 +121,28 @@ impl AlertingService {
                 gate: cooldown_gate,
                 outbox,
                 buffer: Vec::with_capacity(buffer_capacity),
+                buffer_capacity,
                 max_alert_age,
-            };
-            d.recover().await;
-
-            let mut flush_tick = tokio::time::interval(flush_interval);
-            flush_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            flush_tick.tick().await; // consume the immediate first tick
-
-            loop {
-                tokio::select! {
-                    _ = cancel_token.cancelled() => {
-                        info!("Cancellation requested, stopping alerting service");
-                        break;
-                    }
-
-                    maybe_alert = alerts_rx.recv() => {
-                        match maybe_alert {
-                            Some(alert) => {
-                                d.admit(alert).await;
-                                if d.buffer.len() >= buffer_capacity {
-                                    d.flush(&hard_stop).await;
-                                }
-                            }
-                            None => {
-                                info!("Alerts channel closed; draining buffer");
-                                break;
-                            }
-                        }
-                    }
-
-                    _ = flush_tick.tick() => d.flush(&hard_stop).await,
-                }
-            }
-
-            // Drain the channel and make one last attempt, within the deadline counted from
-            // cancellation (or from here if the channel closed). Open claims pass to the next run.
-            let drain = async {
-                while let Ok(alert) = alerts_rx.try_recv() {
-                    d.admit(alert).await;
-                }
-                d.flush(&hard_stop).await;
+                adopted: false,
+                parked_here: HashSet::new(),
             };
             tokio::select! {
-                _ = drain => {}
-                _ = hard_stop.cancelled() => warn!("Shutdown drain exceeded timeout"),
-                _ = tokio::time::sleep(SHUTDOWN_DRAIN_TIMEOUT) => warn!("Shutdown drain exceeded timeout"),
+                () = d.run(alerts_rx, &cancel_token, flush_interval) => {}
+                () = hard_stop.cancelled() => warn!("Shutdown deadline reached; stopping mid-work"),
             }
-            if !d.buffer.is_empty() {
-                if d.outbox.is_some() {
-                    info!(undelivered = d.buffer.len(), "Undelivered alerts kept in the outbox for the next run");
-                } else {
-                    warn!(undelivered = d.buffer.len(), "Stopping with alerts still owed to sinks; they are lost");
-                }
+            let resident = d.buffer.len();
+            match &d.outbox {
+                Some(_) if resident + d.parked_here.len() > 0 => info!(
+                    resident,
+                    parked = d.parked_here.len(),
+                    "Undelivered alerts kept in the outbox for the next run"
+                ),
+                None if resident > 0 => warn!(
+                    undelivered = resident,
+                    "Stopping with alerts still owed to sinks; they are lost"
+                ),
+                _ => {}
             }
-
             info!("Alerting service stopped");
         });
     }
@@ -184,32 +153,115 @@ struct Dispatcher {
     router: Router,
     gate: CooldownGate,
     outbox: Option<Outbox>,
+    /// Resident alerts; parked ones live only in the outbox until due.
     buffer: Vec<Pending>,
+    buffer_capacity: usize,
     max_alert_age: Duration,
+    /// Whether the previous run's records have been queued for re-admission.
+    adopted: bool,
+    /// Parked by this run, so already claimed; anything else from the outbox is re-gated.
+    parked_here: HashSet<Uuid>,
 }
 
 impl Dispatcher {
-    /// Re-admit what the previous run left unsettled. Its claims are ours and taken over;
+    async fn run(
+        &mut self,
+        mut alerts_rx: mpsc::Receiver<Alert>,
+        cancel_token: &CancellationToken,
+        flush_interval: Duration,
+    ) {
+        self.refill().await;
+
+        let mut flush_tick = tokio::time::interval(flush_interval);
+        flush_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        flush_tick.tick().await; // consume the immediate first tick
+
+        loop {
+            tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    info!("Cancellation requested, stopping alerting service");
+                    break;
+                }
+
+                maybe_alert = alerts_rx.recv() => {
+                    match maybe_alert {
+                        Some(alert) => {
+                            self.admit(alert).await;
+                            if self.buffer.len() >= self.buffer_capacity {
+                                self.flush().await;
+                            }
+                        }
+                        None => {
+                            info!("Alerts channel closed; draining buffer");
+                            break;
+                        }
+                    }
+                }
+
+                _ = flush_tick.tick() => {
+                    self.refill().await;
+                    self.flush().await;
+                }
+            }
+        }
+
+        // Drain the channel and make one last attempt; the caller's deadline bounds a
+        // cancellation, this one a closed channel. Open claims pass to the next run.
+        let drain = async {
+            while let Ok(alert) = alerts_rx.try_recv() {
+                self.admit(alert).await;
+            }
+            self.flush().await;
+        };
+        if tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, drain)
+            .await
+            .is_err()
+        {
+            warn!("Shutdown drain exceeded timeout");
+        }
+    }
+
+    /// Queue the previous run's records (retried until Redis answers), then load parked
+    /// alerts that are due, up to capacity. A previous run's claims are ours and taken over;
     /// one it confirmed before dying is suppressed by the gate and dropped here.
-    async fn recover(&mut self) {
+    async fn refill(&mut self) {
         let Some(outbox) = &mut self.outbox else {
             return;
         };
-        let restored = match outbox.load(&self.router).await {
-            Ok(restored) => restored,
+        if !self.adopted {
+            // This run's own alerts are already resident or parked on their schedule.
+            let ours: HashSet<Uuid> = self.buffer.iter().map(|p| p.alert.id).collect();
+            let ours = &ours | &self.parked_here;
+            match outbox.adopt_all(&ours).await {
+                Ok(0) => self.adopted = true,
+                Ok(n) => {
+                    info!(
+                        count = n,
+                        "Re-admitting alerts left undelivered by the previous run"
+                    );
+                    self.adopted = true;
+                }
+                Err(e) => error!("Failed to load the alert outbox; retrying: {e}"),
+            }
+        }
+        let room = self.buffer_capacity.saturating_sub(self.buffer.len());
+        if room == 0 {
+            return;
+        }
+        let due = match outbox
+            .take_due(&self.router, Utc::now().timestamp_millis(), room)
+            .await
+        {
+            Ok(due) => due,
             Err(e) => {
-                error!("Failed to load the alert outbox: {e}");
+                error!("Failed to load parked alerts: {e}");
                 return;
             }
         };
-        if !restored.is_empty() {
-            info!(
-                count = restored.len(),
-                "Re-admitting alerts left undelivered by the previous run"
-            );
-        }
-        for pending in restored {
-            if self.gate.should_send(&pending.alert).await {
+        for pending in due {
+            if self.parked_here.remove(&pending.alert.id)
+                || self.gate.should_send(&pending.alert).await
+            {
                 self.buffer.push(pending);
             } else {
                 self.forget(pending.alert.id).await;
@@ -230,26 +282,27 @@ impl Dispatcher {
             attempts: 0,
             delivered: false,
             next_try: None,
+            persisted: false,
         };
         // Stored before the gate claims it, so a crash in between still re-raises it.
-        let stored = self.store(&pending).await;
+        self.persist(&mut pending).await;
         if !self.gate.should_send(&pending.alert).await {
-            if stored {
+            if pending.persisted {
                 self.forget(pending.alert.id).await;
             }
             return;
         }
-        // Durable now: the slot checkpoint no longer has to wait for it.
-        if stored {
-            pending.alert.slot_hold = None;
-        }
         record_alert(pending.alert.severity);
+        // Memory is full: a persisted alert waits in the outbox and is loaded when there's room.
+        if self.buffer.len() >= self.buffer_capacity && self.park(&pending, Duration::ZERO).await {
+            return;
+        }
         self.buffer.push(pending);
     }
 
-    /// One delivery attempt for every alert that is due. Failed ones are retried, then parked,
-    /// and settled once delivered everywhere or older than `max_alert_age`.
-    async fn flush(&mut self, hard_stop: &CancellationToken) {
+    /// One delivery attempt for every resident alert that is due. Failed ones are retried,
+    /// then parked, and settled once delivered everywhere or older than `max_alert_age`.
+    async fn flush(&mut self) {
         let now = Instant::now();
         let mut per_sink: HashMap<SinkId, Vec<usize>> = HashMap::new();
         for (i, pending) in self.buffer.iter().enumerate() {
@@ -260,10 +313,7 @@ impl Dispatcher {
                 per_sink.entry(sink.clone()).or_default().push(i);
             }
         }
-        if per_sink.is_empty() {
-            return;
-        }
-        // Outcomes live outside the send futures, so a timeout or hard stop keeps what completed.
+        // Outcomes live outside the send futures, so a timeout keeps what completed.
         let mut jobs: Vec<(SinkId, Vec<usize>, Vec<Delivery>)> = per_sink
             .into_iter()
             .map(|(sink, idxs)| {
@@ -297,10 +347,7 @@ impl Dispatcher {
                 }
             }
         });
-        tokio::select! {
-            _ = futures::future::join_all(sends) => {}
-            _ = hard_stop.cancelled() => warn!("Shutdown deadline reached mid-delivery"),
-        }
+        futures::future::join_all(sends).await;
 
         let mut changed = vec![false; self.buffer.len()];
         let mut failed = vec![false; self.buffer.len()];
@@ -325,37 +372,45 @@ impl Dispatcher {
                 self.settle(pending, true).await;
                 continue;
             }
+            // Checked on every pass, so deferrals (which cost no attempt) still expire.
+            let age = (Utc::now() - pending.alert.fired_at)
+                .to_std()
+                .unwrap_or_default();
+            if age >= self.max_alert_age {
+                error!(
+                    rule = pending.alert.rule.name,
+                    sinks = ?pending.sinks,
+                    attempts = pending.attempts,
+                    "Giving up on alert delivery",
+                );
+                // Delivered somewhere: keep the claim so those sinks don't get it twice.
+                let delivered = pending.delivered;
+                self.settle(pending, delivered).await;
+                continue;
+            }
+            let mut backoff = None;
             if failed {
                 pending.attempts += 1;
                 if pending.attempts >= MAX_DELIVERY_ATTEMPTS {
-                    let age = (Utc::now() - pending.alert.fired_at)
-                        .to_std()
-                        .unwrap_or_default();
-                    if age >= self.max_alert_age {
-                        error!(
-                            rule = pending.alert.rule.name,
-                            sinks = ?pending.sinks,
-                            attempts = pending.attempts,
-                            "Giving up on alert delivery",
-                        );
-                        // Delivered somewhere: keep the claim so those sinks don't get it twice.
-                        let delivered = pending.delivered;
-                        self.settle(pending, delivered).await;
-                        continue;
-                    }
-                    let backoff = park_backoff(pending.attempts);
-                    warn!(
-                        rule = pending.alert.rule.name,
-                        sinks = ?pending.sinks,
-                        attempts = pending.attempts,
-                        retry_in_s = backoff.as_secs(),
-                        "Alert still undelivered; parking it",
-                    );
-                    pending.next_try = Some(now + backoff);
+                    backoff = Some(park_backoff(pending.attempts));
                 }
             }
-            if changed || failed {
-                self.store(&pending).await;
+            if changed || failed || !pending.persisted {
+                self.persist(&mut pending).await;
+            }
+            if let Some(backoff) = backoff {
+                warn!(
+                    rule = pending.alert.rule.name,
+                    sinks = ?pending.sinks,
+                    attempts = pending.attempts,
+                    retry_in_s = backoff.as_secs(),
+                    "Alert still undelivered; parking it",
+                );
+                if self.park(&pending, backoff).await {
+                    continue;
+                }
+                // Not persisted: wait in memory instead.
+                pending.next_try = Some(now + backoff);
             }
             self.buffer.push(pending);
         }
@@ -371,17 +426,39 @@ impl Dispatcher {
         self.forget(pending.alert.id).await;
     }
 
-    async fn store(&mut self, pending: &Pending) -> bool {
+    /// Write the alert's current state. Once durable, the slot checkpoint no longer waits on it.
+    async fn persist(&mut self, pending: &mut Pending) {
+        let Some(outbox) = &mut self.outbox else {
+            return;
+        };
+        match outbox.put(pending).await {
+            Ok(()) => {
+                pending.persisted = true;
+                pending.alert.slot_hold = None;
+            }
+            Err(e) => error!(
+                rule = pending.alert.rule.name,
+                "Failed to persist alert to the outbox: {e}"
+            ),
+        }
+    }
+
+    /// Move a persisted alert out of memory until `after` from now. `false` keeps it resident.
+    async fn park(&mut self, pending: &Pending, after: Duration) -> bool {
         let Some(outbox) = &mut self.outbox else {
             return false;
         };
-        match outbox.put(pending).await {
-            Ok(()) => true,
+        if !pending.persisted {
+            return false;
+        }
+        let due_ms = Utc::now().timestamp_millis() + after.as_millis() as i64;
+        match outbox.park(pending.alert.id, due_ms).await {
+            Ok(()) => {
+                self.parked_here.insert(pending.alert.id);
+                true
+            }
             Err(e) => {
-                error!(
-                    rule = pending.alert.rule.name,
-                    "Failed to persist alert to the outbox: {e}"
-                );
+                error!(rule = pending.alert.rule.name, "Failed to park alert: {e}");
                 false
             }
         }
@@ -408,8 +485,10 @@ pub(crate) struct Pending {
     pub(crate) sinks: Vec<SinkId>,
     pub(crate) attempts: u32,
     pub(crate) delivered: bool,
-    /// Parked until then; `None` is due now.
+    /// Waiting in memory until then (only when it couldn't be parked); `None` is due now.
     pub(crate) next_try: Option<Instant>,
+    /// Its current state is in the outbox.
+    pub(crate) persisted: bool,
 }
 
 #[cfg(test)]
@@ -506,15 +585,12 @@ mod tests {
         assert_eq!(run(2, vec![alert("a")], |s| s).await, vec!["a"]);
     }
 
-    /// Given up after every attempt failed, the fleet claim is released, so the
-    /// next occurrence of the same alert is not suppressed by it.
+    /// Given up past its max age, the fleet claim is released, so the next
+    /// occurrence of the same alert is not suppressed by it.
     #[tokio::test]
     async fn undelivered_alert_releases_its_claim() {
         let alerts = vec![alert("a"), alert("a")];
-        let delivered = run(MAX_DELIVERY_ATTEMPTS as usize, alerts, |s| {
-            s.with_max_alert_age(Duration::ZERO)
-        })
-        .await;
+        let delivered = run(1, alerts, |s| s.with_max_alert_age(Duration::ZERO)).await;
         assert_eq!(delivered, vec!["a"]);
     }
 

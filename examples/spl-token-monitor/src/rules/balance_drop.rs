@@ -9,7 +9,7 @@ use shipstern_spl_token_parser::TokenProgramState;
 use solana_program_pack::Pack;
 use solana_pubkey::Pubkey;
 use solana_sentinel::utility::pubkey::deserialize_pubkey_vec;
-use solana_sentinel::utility::rpc::try_fetch_accounts_with_slot;
+use solana_sentinel::utility::rpc::try_fetch_account_chunks;
 use solana_sentinel::{
     Alert, BootstrapCtx, Deps, RuleId, Severity, StateCache, StreamCtx, StreamRule, Subscription,
 };
@@ -56,14 +56,15 @@ impl StreamRule for BalanceDrop {
 
     /// Seed the cache from RPC so the first streamed update is already a comparison.
     async fn bootstrap(&mut self, ctx: &BootstrapCtx) -> anyhow::Result<()> {
-        let (fetched, slot) = try_fetch_accounts_with_slot(&ctx.rpc, &self.accounts, None).await?;
-        self.last.seed(
-            slot,
-            fetched.iter().filter_map(|(pubkey, account)| {
-                let state = spl_token_interface::state::Account::unpack(&account.data).ok()?;
-                Some((*pubkey, state.amount))
-            }),
-        );
+        for (slot, fetched) in try_fetch_account_chunks(&ctx.rpc, &self.accounts, None).await? {
+            self.last.seed(
+                slot,
+                fetched.iter().filter_map(|(pubkey, account)| {
+                    let state = spl_token_interface::state::Account::unpack(&account.data).ok()?;
+                    Some((*pubkey, state.amount))
+                }),
+            );
+        }
         Ok(())
     }
 

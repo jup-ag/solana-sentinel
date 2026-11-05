@@ -1,5 +1,7 @@
 use anyhow::Context;
 use redis::aio::{ConnectionManager, ConnectionManagerConfig};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
@@ -45,43 +47,74 @@ pub fn setup_tracing_subscriber() -> bool {
     }
 }
 
-pub async fn wait_for_shutdown_signal(cancel_token: CancellationToken) -> ShutdownReason {
-    tokio::select! {
-        result = signal::ctrl_c() => {
-            match result {
+/// Handles Ctrl-C and SIGTERM from now on by cancelling `cancel_token`, so a signal during
+/// startup also takes the drain path. Call before startup; `wait_for_shutdown` reads the result.
+pub fn listen_for_shutdown_signal(cancel_token: &CancellationToken) -> Arc<AtomicBool> {
+    let signalled = Arc::new(AtomicBool::new(false));
+    // Registered here, not on first poll, so no SIGTERM slips through before the task runs.
+    let mut sigterm = sigterm_stream();
+    let (cancel, flag) = (cancel_token.clone(), Arc::clone(&signalled));
+    tokio::spawn(async move {
+        tokio::select! {
+            result = signal::ctrl_c() => match result {
                 Ok(()) => info!("Shutdown signal received; shutting down"),
-                Err(err) => error!(error = %err, "Failed to listen for shutdown signal"),
-            }
-            ShutdownReason::Signal
+                Err(err) => {
+                    error!(error = %err, "Failed to listen for shutdown signal");
+                    return;
+                }
+            },
+            // Kubernetes stops pods with SIGTERM; unhandled, it kills the process before the alert drain.
+            () = recv_sigterm(&mut sigterm) => info!("SIGTERM received; shutting down"),
+            () = cancel.cancelled() => return,
         }
-        // Kubernetes stops pods with SIGTERM; unhandled, it kills the process before the alert drain.
-        () = sigterm() => {
-            info!("SIGTERM received; shutting down");
-            ShutdownReason::Signal
-        }
-        _ = cancel_token.cancelled() => {
-            info!("Consumer processing completed; shutting down");
-            ShutdownReason::Internal
-        }
+        flag.store(true, Ordering::Relaxed);
+        cancel.cancel();
+    });
+    signalled
+}
+
+/// Waits for shutdown and says whether a signal or an internal failure caused it.
+pub async fn wait_for_shutdown(
+    cancel_token: &CancellationToken,
+    signalled: &AtomicBool,
+) -> ShutdownReason {
+    cancel_token.cancelled().await;
+    if signalled.load(Ordering::Relaxed) {
+        ShutdownReason::Signal
+    } else {
+        info!("Consumer processing completed; shutting down");
+        ShutdownReason::Internal
     }
 }
 
 #[cfg(unix)]
-async fn sigterm() {
-    match signal::unix::signal(signal::unix::SignalKind::terminate()) {
-        Ok(mut s) => {
+type SigTerm = Option<signal::unix::Signal>;
+#[cfg(not(unix))]
+type SigTerm = ();
+
+#[cfg(unix)]
+fn sigterm_stream() -> SigTerm {
+    signal::unix::signal(signal::unix::SignalKind::terminate())
+        .inspect_err(|err| error!(error = %err, "Failed to listen for SIGTERM"))
+        .ok()
+}
+
+#[cfg(not(unix))]
+fn sigterm_stream() -> SigTerm {}
+
+#[cfg(unix)]
+async fn recv_sigterm(sigterm: &mut SigTerm) {
+    match sigterm {
+        Some(s) => {
             s.recv().await;
         }
-        Err(err) => {
-            error!(error = %err, "Failed to listen for SIGTERM");
-            std::future::pending::<()>().await;
-        }
+        None => std::future::pending().await,
     }
 }
 
 #[cfg(not(unix))]
-async fn sigterm() {
-    std::future::pending::<()>().await;
+async fn recv_sigterm(_: &mut SigTerm) {
+    std::future::pending().await
 }
 
 /// Connects to Redis with a timeout and retry configuration.

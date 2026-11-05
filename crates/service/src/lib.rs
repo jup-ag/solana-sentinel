@@ -10,7 +10,9 @@ pub mod wiring;
 use crate::config::service::DataSourceConfig;
 use crate::config::SentinelConfig;
 use crate::consumer::ConsumerService;
-use crate::utils::{connect_to_redis, extract_pod_id, wait_for_shutdown_signal, ShutdownReason};
+use crate::utils::{
+    connect_to_redis, extract_pod_id, listen_for_shutdown_signal, wait_for_shutdown, ShutdownReason,
+};
 pub use crate::utils::{setup_crypto_provider, setup_tracing_subscriber};
 use crate::validate::validate_programs;
 use alerting::outbox::Outbox;
@@ -23,7 +25,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// What a deployment binary passes in: its name and the programs it runs.
 pub struct RunOptions {
@@ -56,6 +58,7 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
     print_program_reports(&programs);
 
     let cancel_token = CancellationToken::new();
+    let signalled = listen_for_shutdown_signal(&cancel_token);
     let tracker = TaskTracker::new();
     let rpc = Arc::new(RpcClient::new(config.rpc().url.to_string()));
 
@@ -114,7 +117,11 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
         slot_tracker.clone(),
         pod_id.clone(),
     );
-    consumer_service.start(&tracker).await?;
+    // Bootstrap can take minutes of RPC; a shutdown during it skips straight to the drain.
+    tokio::select! {
+        started = consumer_service.start(&tracker) => started?,
+        () = cancel_token.cancelled() => warn!("Shutdown requested during startup"),
+    }
 
     // Start the alerting service and send alerts to the clickhouse and slack sinks
     let alerting_service =
@@ -122,8 +129,8 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
             .with_outbox(outbox);
     alerting_service.start(&tracker);
 
-    // Wait for shutdown signal (Ctrl+C) or cancellation token to be triggered
-    let reason = wait_for_shutdown_signal(cancel_token.clone()).await;
+    // Wait for shutdown signal (Ctrl+C, SIGTERM) or cancellation token to be triggered
+    let reason = wait_for_shutdown(&cancel_token, &signalled).await;
 
     cancel_token.cancel();
     tracker.close();
