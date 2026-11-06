@@ -20,7 +20,9 @@ use shipstern_core::Prefilter;
 use shipstern_slot_parser::SlotParser;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sentinel::refresh::spawn_refresh_loops;
-use solana_sentinel::{BootstrapCtx, StartCtx, StartedProgram, StreamPipeline, ValidatedProgram};
+use solana_sentinel::{
+    BootstrapCtx, BuiltReactor, StartCtx, StartedProgram, StreamPipeline, ValidatedProgram,
+};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -59,7 +61,8 @@ impl ConsumerService {
         }
     }
 
-    pub async fn start(self, tracker: &TaskTracker) -> Result<()> {
+    /// Start every program and the stream; returns the programs' reactors for the alert tap.
+    pub async fn start(self, tracker: &TaskTracker) -> Result<Vec<BuiltReactor>> {
         info!("Starting consumer service");
 
         let Self {
@@ -94,8 +97,12 @@ impl ConsumerService {
 
         // Programs are independent; their RPC warm-ups overlap.
         let start = Instant::now();
-        let started = try_join_all(programs.into_iter().map(|p| p.start(&ctx))).await?;
+        let mut started = try_join_all(programs.into_iter().map(|p| p.start(&ctx))).await?;
         info!("Finished starting programs in {:.2?}", start.elapsed());
+        let reactors: Vec<BuiltReactor> = started
+            .iter_mut()
+            .flat_map(|p| std::mem::take(&mut p.reactors))
+            .collect();
 
         let launch = Launch {
             started,
@@ -155,7 +162,7 @@ impl ConsumerService {
                 &c.buffer,
             ),
         }
-        Ok(())
+        Ok(reactors)
     }
 }
 
