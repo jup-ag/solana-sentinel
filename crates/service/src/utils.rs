@@ -10,6 +10,8 @@ use tracing::{error, info};
 pub enum ShutdownReason {
     Signal,
     Internal,
+    /// A finite source (replay) played to the end.
+    Completed,
 }
 
 /// Install the aws-lc-rs rustls provider unless the host already installed one.
@@ -77,10 +79,14 @@ pub fn listen_for_shutdown_signal(cancel_token: &CancellationToken) -> Arc<Atomi
 pub async fn wait_for_shutdown(
     cancel_token: &CancellationToken,
     signalled: &AtomicBool,
+    completed: &AtomicBool,
 ) -> ShutdownReason {
     cancel_token.cancelled().await;
     if signalled.load(Ordering::Relaxed) {
         ShutdownReason::Signal
+    } else if completed.load(Ordering::Relaxed) {
+        info!("Source completed; shutting down");
+        ShutdownReason::Completed
     } else {
         info!("Consumer processing completed; shutting down");
         ShutdownReason::Internal

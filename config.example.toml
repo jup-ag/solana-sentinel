@@ -18,6 +18,11 @@
 #                             silence and missing items feed the health/source_divergence
 #                             rule and the data_source_* metrics. See the commented example
 #                             below and CONTRIBUTING.md ("Two providers").
+#   type = "replay"           a recorded slot window (drills): path = "incident.jsonl",
+#                             speed = 1.0 (0 = unpaced), timing = "block_time" | "nominal",
+#                             slot_ms = 400, linger_seconds = 30, emit_log = "emit.jsonl".
+#                             Record one with `sentinel-replay-record` (crates/data-source).
+#                             The service exits 0 once the window is played.
 # Every type also takes `sources_channel_size` (shipstern runtime buffer).
 # Anything else: implement `shipstern::sources::SourceTrait` (see crates/data-source/).
 [data_source]
@@ -93,6 +98,12 @@ heartbeat_interval_seconds = 30
 [[sinks]]
 type = "stdout"
 id = "stdout"
+
+# JSON lines appended to a file, with `emitted_at`; for drills (several ids may share a path).
+# [[sinks]]
+# type = "jsonl"
+# id = "drill"
+# path = "alerts.jsonl"
 
 # Primary ClickHouse: archival sink. Durable record-of-truth.
 [[sinks]]

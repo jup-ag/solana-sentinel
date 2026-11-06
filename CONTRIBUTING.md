@@ -191,6 +191,7 @@ its runtime, which dispatches by filter name; `[data_source]` picks it:
 | `websocket` | `WebsocketSource` (`solana-sentinel-data-source`) | PubSub `accountSubscribe` / `programSubscribe` / `logsSubscribe` + `getTransaction`; commitment ≥ `confirmed` |
 | `kafka` | `KafkaSource` (`solana-sentinel-data-source`) | janus `raw.<program>.{accounts,transactions}` topics; slot feed synthesized from record slots |
 | `multi` | `MultiSource` (`solana-sentinel-data-source`) | N children of the types above, same filters, merged and deduplicated; per-child health for `health/source_divergence` |
+| `replay` | `ReplaySource` (`solana-sentinel-data-source`) | a recorded slot window (JSON lines, `replay::format`) in slot order at original speed × `speed`; finite, the service exits 0 after it |
 
 ### Two providers (`type = "multi"`)
 
@@ -233,6 +234,29 @@ splits the Solana CLI's configured RPC (Triton/rpcpool layout: gRPC endpoint = s
 host, x-token = the path token) into a gRPC child and a PubSub child and prints delivery
 share, delays and gaps; `--config <file>` takes any `MultiConfig` TOML instead (keep it
 git-ignored). It refuses public RPCs and never prints endpoints or tokens.
+
+### Replays (incident drills)
+
+`sentinel-replay-record` (bin of `solana-sentinel-data-source`) records a window around an
+exploit transaction: every transaction touching the given addresses (`--scan signatures`, or
+`--scan blocks` for every block of the window), the exploit transactions themselves, block
+times, and today's snapshot of the accounts they wrote. RPC: `$SENTINEL_RECORD_RPC_URL`, else
+the Solana CLI config's `json_rpc_url`; never printed, public endpoints refused.
+
+```sh
+cargo run -p solana-sentinel-data-source --bin sentinel-replay-record -- \
+  --out drift.jsonl --name drift --exploit-signature 5cvV… --address GXWq… \
+  --before-slots 150 --after-slots 600
+```
+
+The source emits, per slot, a `processed` slot update, then each transaction and the account
+post-states rebuilt from its metadata (`replay::accounts`): token accounts (mint, owner,
+amount, lamports exact; other fields from the snapshot) and system wallets (lamports) only.
+Program-owned state cannot be rebuilt (no historical data on RPC), so account rules on it
+see nothing in a replay; rules still bootstrap from today's RPC state. With
+`initial_state = true` each rebuildable account's pre-state goes out at the first slot.
+`emit_log` records each emitted slot/transaction with its wall time; with a `jsonl` sink
+(`emitted_at`) that gives exploit tx -> alert latency.
 
 To add a transport, implement `shipstern::sources::SourceTrait` (and `FilterUpdateSource` if
 it can apply later filter sets): emit `SubscribeUpdate`s whose `filters` name the parsers they

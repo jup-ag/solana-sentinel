@@ -5,6 +5,10 @@ publish.workspace = true
 repository.workspace = true
 version.workspace = true
 
+[[bin]]
+name = "sentinel-replay-record"
+path = "src/bin/sentinel-replay-record.rs"
+
 [dependencies]
 utility = { workspace = true }
 observability = { workspace = true }
@@ -17,6 +21,8 @@ futures = { workspace = true }
 prost = { workspace = true }
 rdkafka = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+tracing-subscriber = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
@@ -42,6 +48,7 @@ wincode = "0.5"
 config = { workspace = true }
 parking_lot = { workspace = true }
 rustls = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

@@ -11,18 +11,16 @@ use crate::parser::{scoped_parser_id, PipelineKind};
 use crate::spec::{InstalledStream, StartedProgram};
 use crate::subscription::Subscription;
 use crate::BootstrapCtx;
+#[cfg(doc)]
+use crate::ProgramDeps;
 use domain::programs::Program;
-use shipstern::FilterUpdateError;
-use shipstern::RuntimeHandle;
+use shipstern::{FilterUpdateError, RuntimeHandle};
 use shipstern_core::Prefilter;
 use std::time::Duration;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{error, info, warn};
-
-#[cfg(doc)]
-use crate::ProgramDeps;
 
 pub fn spawn_refresh_loops(
     programs: Vec<StartedProgram>,

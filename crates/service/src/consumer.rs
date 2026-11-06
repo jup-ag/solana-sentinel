@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use data_source::rpc::build_rpc_client;
 use data_source::{
     ChildConfig, ChildSourceConfig, KafkaConfig, KafkaSource, MultiConfig, MultiSource,
-    WebsocketConfig, WebsocketSource, YellowstoneGrpcConfig, YellowstoneGrpcSource,
+    ReplaySource, WebsocketConfig, WebsocketSource, YellowstoneGrpcConfig, YellowstoneGrpcSource,
 };
 use domain::alert::Alert;
 use futures::future::try_join_all;
@@ -26,6 +26,7 @@ use solana_sentinel::{
     BootstrapCtx, BuiltReactor, Liveness, StartCtx, StartedProgram, StreamPipeline,
     ValidatedProgram,
 };
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -42,6 +43,7 @@ pub struct ConsumerService {
     slot_tracker: SlotTracker,
     pod_id: String,
     liveness: Liveness,
+    completed: Arc<AtomicBool>,
 }
 
 impl ConsumerService {
@@ -65,7 +67,15 @@ impl ConsumerService {
             slot_tracker,
             pod_id,
             liveness,
+            completed: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Set when a finite source (replay) played to the end and the runtime drained: the
+    /// stop that follows is a success, not a failure to restart from.
+    pub fn with_completion_flag(mut self, completed: Arc<AtomicBool>) -> Self {
+        self.completed = completed;
+        self
     }
 
     /// Start every program and the stream; returns the programs' reactors for the alert tap.
@@ -81,6 +91,7 @@ impl ConsumerService {
             slot_tracker,
             pod_id,
             liveness,
+            completed,
         } = self;
         // Filled by a `multi` data source; read by the `health/source_divergence` rule.
         let source_health = SourceHealth::new();
@@ -122,6 +133,7 @@ impl ConsumerService {
             slot_tracker,
             cancel_token,
             tracker,
+            completed: config.data_source().is_finite().then_some(completed),
         };
         let from_slot = Some(launch.slot_tracker.load_last_seen_grpc_slot()).filter(|s| *s > 0);
 
@@ -130,6 +142,9 @@ impl ConsumerService {
             DataSourceConfig::Multi(m) => {
                 let multi = multi_config(m, &config, from_slot, source_health)?;
                 launch.run::<MultiSource>(multi, &m.buffer);
+            }
+            DataSourceConfig::Replay(c) => {
+                launch.run::<ReplaySource>(c.replay.clone(), &c.buffer);
             }
             single => match child_config(single, &config, from_slot)? {
                 ChildSourceConfig::YellowstoneGrpc(c) => {
@@ -151,6 +166,7 @@ fn buffer_of(c: &DataSourceConfig) -> &BufferSettings {
         DataSourceConfig::Websocket(c) => &c.buffer,
         DataSourceConfig::Kafka(c) => &c.buffer,
         DataSourceConfig::Multi(c) => &c.buffer,
+        DataSourceConfig::Replay(c) => &c.buffer,
     }
 }
 
@@ -212,6 +228,7 @@ fn child_config(
             properties: c.properties.clone(),
         }),
         DataSourceConfig::Multi(_) => anyhow::bail!("a multi data source cannot contain another"),
+        DataSourceConfig::Replay(_) => anyhow::bail!("a multi data source cannot contain a replay"),
     })
 }
 
@@ -254,6 +271,8 @@ struct Launch<'a> {
     slot_tracker: SlotTracker,
     cancel_token: CancellationToken,
     tracker: &'a TaskTracker,
+    /// Finite sources only: set when the runtime ends cleanly.
+    completed: Option<Arc<AtomicBool>>,
 }
 
 impl Launch<'_> {
@@ -298,6 +317,7 @@ impl Launch<'_> {
             self.slot_tracker.clone(),
             self.cancel_token.clone(),
             self.tracker,
+            self.completed.take(),
         );
         spawn_refresh_loops(
             self.started,
@@ -315,6 +335,7 @@ fn spawn_runtime<S: FilterUpdateSource>(
     slot_tracker: SlotTracker,
     cancel_token: CancellationToken,
     tracker: &TaskTracker,
+    completed: Option<Arc<AtomicBool>>,
 ) {
     let replaying = slot_tracker.load_last_seen_grpc_slot() > 0;
     tracker.spawn(async move {
@@ -323,7 +344,12 @@ fn spawn_runtime<S: FilterUpdateSource>(
             result = runtime.try_run_async() => {
                 let replay_rejected = match &result {
                     Ok(()) => {
-                        info!("Consumer runtime stopped; shutting down service");
+                        if let Some(flag) = &completed {
+                            info!("Finite source played to the end; shutting down service");
+                            flag.store(true, Ordering::Relaxed);
+                        } else {
+                            info!("Consumer runtime stopped; shutting down service");
+                        }
                         false
                     }
                     Err(err) => {

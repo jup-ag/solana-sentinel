@@ -5,6 +5,7 @@ use tracing::warn;
 
 pub mod betterstack;
 pub mod clickhouse;
+pub mod jsonl;
 pub mod slack;
 pub mod stdout;
 
@@ -16,6 +17,8 @@ pub enum AlertSinkError {
     SlackSinkError(Box<dyn std::error::Error + Send + Sync>),
     #[error("betterstack sink error: {0}")]
     BetterStackSinkError(String),
+    #[error("jsonl sink error: {0}")]
+    Jsonl(String),
 }
 
 #[async_trait]

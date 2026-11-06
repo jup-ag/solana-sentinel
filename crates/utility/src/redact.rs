@@ -48,9 +48,18 @@ mod tests {
 
     #[test]
     fn redacts_path_query_and_userinfo() {
-        assert_eq!(redact_url("https://mainnet.rpcpool.com/abc123"), "https://mainnet.rpcpool.com/…");
-        assert_eq!(redact_url("https://x.helius-rpc.com/?api-key=k"), "https://x.helius-rpc.com/…");
-        assert_eq!(redact_url("wss://u:p@ws.example.com:8900"), "wss://ws.example.com:8900");
+        assert_eq!(
+            redact_url("https://mainnet.rpcpool.com/abc123"),
+            "https://mainnet.rpcpool.com/…"
+        );
+        assert_eq!(
+            redact_url("https://x.helius-rpc.com/?api-key=k"),
+            "https://x.helius-rpc.com/…"
+        );
+        assert_eq!(
+            redact_url("wss://u:p@ws.example.com:8900"),
+            "wss://ws.example.com:8900"
+        );
         assert_eq!(redact_url("https://host"), "https://host");
     }
 
