@@ -6,7 +6,8 @@
 //! builds shipstern pipelines and poll loops, and forwards alerts.
 //!
 //! Adding a rule is one file implementing [`StreamRule`] or [`PollRule`], and
-//! one `.register::<Rule>()` line in the program's `spec()`.
+//! one `.register::<Rule>()` line in the program's `spec()`. A [`ReactorRule`] is fed
+//! by other rules' alerts instead, registered with `.reactor::<Rule>()`.
 
 pub mod cache;
 pub mod deps;
@@ -14,6 +15,7 @@ pub mod handler;
 pub mod parser;
 pub mod poll;
 pub mod raw;
+pub mod reactor;
 pub mod refresh;
 pub mod rule;
 pub mod rule_set;
@@ -37,6 +39,7 @@ pub use domain::rules::RuleId;
 pub use observability::slot_tracker::GrpcSlotReader;
 pub use parser::StreamPipeline;
 pub use poll::PollSource;
+pub use reactor::{BuiltReactor, ReactCtx, ReactorRule};
 pub use rule::{NoConfig, PollCtx, PollRule, RuleConfigError, StreamCtx, StreamRule};
 pub use rule_set::{PollRules, StreamRules};
 pub use shipstern_core::{AccountFilter, MemcmpData};

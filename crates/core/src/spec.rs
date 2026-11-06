@@ -10,6 +10,9 @@ use crate::parser::{
     scoped_parser_id, FrameworkParser, PipelineKind, StreamInput, StreamPipeline, TxGate,
 };
 use crate::poll::{spawn_poll_loop, PollSource};
+use crate::reactor::{
+    spawn_reactor_refresh_loops, BuiltReactor, ReactorEntry, ReactorRule, ValidatedReactor,
+};
 use crate::rule::RuleConfigError;
 use crate::rule_set::{PollRules, StreamRules, ValidatedPoll, ValidatedStream};
 use crate::subscription::Subscription;
@@ -299,6 +302,7 @@ pub struct ProgramSpec {
     program: Program,
     deps: DepsBootstrap,
     pipelines: Vec<Box<dyn Pipeline>>,
+    reactors: Vec<ReactorEntry>,
 }
 
 impl ProgramSpec {
@@ -307,6 +311,7 @@ impl ProgramSpec {
             program,
             deps: bootstrap_deps::<()>,
             pipelines: Vec::new(),
+            reactors: Vec::new(),
         }
     }
 
@@ -396,9 +401,20 @@ impl ProgramSpec {
         self
     }
 
+    /// A rule fed by every program's alerts (see [`crate::reactor`]) rather than by a parser.
+    #[must_use]
+    pub fn reactor<R: ReactorRule>(mut self) -> Self {
+        self.reactors.push(ReactorEntry::of::<R>());
+        self
+    }
+
     /// Every rule this program can run, whether or not it is configured.
     pub fn rule_ids(&self) -> Vec<RuleId> {
-        self.pipelines.iter().flat_map(|p| p.rule_ids()).collect()
+        self.pipelines
+            .iter()
+            .flat_map(|p| p.rule_ids())
+            .chain(self.reactors.iter().map(|r| r.id))
+            .collect()
     }
 
     /// Typed-config validation of the configured rules. No I/O; errors name program, rule and field.
@@ -416,10 +432,24 @@ impl ProgramSpec {
                 pipelines.push(validated);
             }
         }
+        let mut reactors = Vec::new();
+        for entry in &self.reactors {
+            let Some(value) = raw.get(entry.id.name) else {
+                continue;
+            };
+            let validated =
+                (entry.validate)(value.clone()).map_err(|source| RuleConfigError::Config {
+                    program: self.program,
+                    rule: entry.id.name,
+                    source: Box::new(source),
+                })?;
+            reactors.push(validated);
+        }
         Ok(ValidatedProgram {
             program: self.program,
             deps: self.deps,
             pipelines,
+            reactors,
         })
     }
 }
@@ -429,6 +459,7 @@ pub struct ValidatedProgram {
     program: Program,
     deps: DepsBootstrap,
     pipelines: Vec<Box<dyn ValidatedPipeline>>,
+    reactors: Vec<ValidatedReactor>,
 }
 
 impl ValidatedProgram {
@@ -436,15 +467,20 @@ impl ValidatedProgram {
         self.program
     }
 
-    /// The configured rules, in registration order.
+    /// The configured rules, in registration order (reactors last).
     pub fn rule_ids(&self) -> Vec<RuleId> {
-        self.pipelines.iter().flat_map(|p| p.rule_ids()).collect()
+        self.pipelines
+            .iter()
+            .flat_map(|p| p.rule_ids())
+            .chain(self.reactors.iter().map(|r| r.id))
+            .collect()
     }
 
     pub fn report(&self) -> ProgramReport {
         ProgramReport {
             program: self.program,
             pipelines: self.pipelines.iter().map(|p| p.report()).collect(),
+            reactors: self.reactors.iter().map(|r| r.id).collect(),
         }
     }
 
@@ -460,10 +496,21 @@ impl ValidatedProgram {
             deps: Arc::clone(&deps.0),
             pipelines: Vec::new(),
             streams: Vec::new(),
+            reactors: Vec::new(),
         };
         for pipeline in self.pipelines {
             pipeline.start(self.program, &deps, ctx, &mut out).await?;
         }
+        for reactor in self.reactors {
+            let built = reactor.build(self.program, &deps, &ctx.bootstrap).await?;
+            out.reactors.push(built);
+        }
+        spawn_reactor_refresh_loops(
+            &out.reactors,
+            &ctx.bootstrap,
+            &ctx.cancel_token,
+            ctx.tracker,
+        );
         info!(
             program = %self.program,
             elapsed_ms = started.elapsed().as_millis() as u64,
@@ -480,6 +527,8 @@ pub struct StartedProgram {
     pub deps: Arc<dyn ProgramDeps>,
     pub pipelines: Vec<StreamPipeline>,
     pub(crate) streams: Vec<InstalledStream>,
+    /// Built reactors; the service feeds them through the alert tap.
+    pub reactors: Vec<BuiltReactor>,
 }
 
 /// One stream pipeline as built, enough to recompute its filters on refresh.
@@ -496,6 +545,7 @@ pub(crate) struct InstalledStream {
 pub struct ProgramReport {
     pub program: Program,
     pub pipelines: Vec<PipelineReport>,
+    pub reactors: Vec<RuleId>,
 }
 
 pub struct PipelineReport {
@@ -543,6 +593,13 @@ impl Display for ProgramReport {
                     writeln!(f, "      {a}")?;
                 }
             }
+        }
+        for reactor in &self.reactors {
+            writeln!(
+                f,
+                "  reactor {} (fed by every program's alerts)",
+                reactor.name
+            )?;
         }
         Ok(())
     }
