@@ -58,6 +58,18 @@ impl RulesConfig {
     }
 }
 
+impl RulesConfig {
+    /// One rules file body; `origin` names it in errors.
+    pub fn parse_str(toml: &str, origin: &str) -> anyhow::Result<Self> {
+        let parsed = Config::builder()
+            .add_source(File::from_str(toml, FileFormat::Toml))
+            .build()
+            .and_then(Config::try_deserialize::<RulesLayout>)
+            .with_context(|| format!("failed to parse rules `{origin}`"))?;
+        Ok(Self(parsed.rules))
+    }
+}
+
 fn rule_files(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
     let entries = std::fs::read_dir(dir)
         .with_context(|| format!("failed to read rules dir `{}`", dir.display()))?;

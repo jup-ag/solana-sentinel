@@ -28,12 +28,27 @@ shipstern = { workspace = true }
 shipstern-core = { workspace = true }
 shipstern-slot-parser = { workspace = true }
 solana-rpc-client = { workspace = true }
+solana-pubkey = { workspace = true }
 reqwest = { workspace = true }
 
 rustls = { workspace = true }
 thiserror = { workspace = true }
 redis = { workspace = true }
 hostname = { workspace = true }
+
+# `testing` feature: the end-to-end harness (scripted source, in-memory sinks).
+async-trait = { workspace = true, optional = true }
+parking_lot = { workspace = true, optional = true }
+yellowstone-grpc-proto = { workspace = true, optional = true }
+
+[features]
+testing = ["dep:async-trait", "dep:parking_lot", "dep:yellowstone-grpc-proto"]
+
+[dev-dependencies]
+solana-sentinel-service = { path = ".", features = ["testing"] }
+solana-sentinel = { workspace = true, features = ["testing"] }
+solana-sentinel-rules-registry = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

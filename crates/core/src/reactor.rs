@@ -103,9 +103,9 @@ impl BuiltReactor {
         }
     }
 
-    /// Whether this reactor wants `alert`. Never its own alerts.
+    /// Whether this reactor wants `alert`. Never its own alerts, never a canary.
     pub fn accepts(&self, alert: &Alert) -> bool {
-        alert.rule != self.id && (self.accepts)(alert)
+        alert.rule != self.id && !alert.is_canary() && (self.accepts)(alert)
     }
 
     pub async fn react(&self, alert: Alert, ctx: ReactCtx) -> Vec<Alert> {
@@ -373,5 +373,16 @@ mod tests {
         let own = Alert::for_rule(Echo::ID).meta("action", "L1").build();
         assert!(!reactor.accepts(&own));
         assert!(reactor.accepts(&source_alert("L1", None)));
+    }
+
+    /// Canaries pass through the tap but no reactor acts on them, whatever they carry.
+    #[test]
+    fn reactor_ignores_canaries() {
+        let reactor = BuiltReactor::new(Echo, None);
+        let mut canary = source_alert("L1", None);
+        canary
+            .metadata
+            .insert(domain::canary::CANARY.to_string(), "true".to_string());
+        assert!(!reactor.accepts(&canary));
     }
 }

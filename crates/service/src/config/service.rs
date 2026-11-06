@@ -169,6 +169,10 @@ pub struct SlackConfig {
     pub channel: String,
     #[serde(default = "defaults::slack_timeout_seconds")]
     pub timeout_seconds: u64,
+    /// A dedicated (muted) channel for canaries. Unset, canaries are acknowledged without
+    /// posting, so they never reach the incident channel either way.
+    #[serde(default)]
+    pub canary_channel: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -183,6 +187,7 @@ impl ObservabilityConfig {
         self.betterstack.as_ref().map(|hb| HeartbeatSettings {
             url: hb.heartbeat_url.as_str(),
             interval: Duration::from_secs(hb.heartbeat_interval_seconds),
+            gate_on_canary: hb.gate_on_canary,
         })
     }
 }
@@ -205,6 +210,10 @@ pub struct BetterstackSinkConfig {
 pub struct BetterstackHeartbeatConfig {
     pub heartbeat_url: String,
     pub heartbeat_interval_seconds: u64,
+    /// Withhold the heartbeat while an armed canary misses its sink (default on; a no-op
+    /// when no `health.canary` rule is configured).
+    #[serde(default = "defaults::gate_enabled")]
+    pub gate_on_canary: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

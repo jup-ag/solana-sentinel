@@ -61,7 +61,7 @@ impl SentinelConfig {
 }
 
 /// Group rules by program, keeping the order programs first appear in the rules files.
-fn map_programs_with_rules(rules: Vec<RuleConfig>) -> Vec<ProgramRules> {
+pub fn map_programs_with_rules(rules: Vec<RuleConfig>) -> Vec<ProgramRules> {
     let mut out: Vec<ProgramRules> = Vec::new();
     for r in rules {
         match out.iter_mut().find(|p| p.program == r.program) {

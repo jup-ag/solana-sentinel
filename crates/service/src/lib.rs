@@ -3,6 +3,8 @@
 
 pub mod config;
 pub mod consumer;
+#[cfg(feature = "testing")]
+pub mod testing;
 mod utils;
 pub mod validate;
 pub mod wiring;
@@ -15,6 +17,7 @@ use crate::utils::{
 };
 pub use crate::utils::{setup_crypto_provider, setup_tracing_subscriber};
 use crate::validate::validate_programs;
+use alerting::canary_watchdog::{spawn_canary_watchdog, DEFAULT_WATCHDOG_INTERVAL};
 use alerting::outbox::Outbox;
 use alerting::service::AlertingService;
 use anyhow::Context;
@@ -22,7 +25,7 @@ use data_source::rpc::build_rpc_client;
 use observability::slot_tracker::SlotTracker;
 use observability::{prometheus, run_observability_stack};
 use solana_sentinel::reactor::spawn_alert_tap;
-use solana_sentinel::{ProgramSpec, ValidatedProgram};
+use solana_sentinel::{Liveness, ProgramSpec, ValidatedProgram};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -73,6 +76,13 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
 
     let (router, cooldowns) = wiring::build_alerting_router(&config, &programs)?;
 
+    // Feed liveness and canary state: pipelines record into it, the health rules read it,
+    // the alerting service reports canary deliveries, the heartbeat and watchdog check it.
+    let liveness = Liveness::new();
+    liveness
+        .canary()
+        .set_routes(wiring::canary_routes(config.programs_with_rules()));
+
     // Sidecar Redis holds per-pod state (slot checkpoint, local gate);
     let redis_sidecar_conn = connect_to_redis(&config.redis().redis_sidecar_url)
         .await
@@ -107,6 +117,7 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
     let observability = config.observability();
     run_observability_stack(
         &slot_tracker,
+        &liveness,
         observability.server.bind_addr,
         observability.heartbeat(),
         cancel_token.clone(),
@@ -128,6 +139,7 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
         Arc::clone(&rpc),
         slot_tracker.clone(),
         pod_id.clone(),
+        liveness.clone(),
     );
     // Bootstrap can take minutes of RPC; a shutdown during it skips straight to the drain.
     let reactors = tokio::select! {
@@ -137,12 +149,22 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
             Vec::new()
         }
     };
+    // Past the tap, so a stuck tap or reactor cannot hide a missed canary.
+    spawn_canary_watchdog(
+        liveness.clone(),
+        alerts_tx.clone(),
+        pod_id.clone(),
+        DEFAULT_WATCHDOG_INTERVAL,
+        cancel_token.clone(),
+        &tracker,
+    );
     spawn_alert_tap(reactors, rules_rx, alerts_tx, &tracker);
 
     // Start the alerting service and send alerts to the clickhouse and slack sinks
     let alerting_service =
         AlertingService::new(alerts_rx, router, cooldown_gate, cancel_token.clone())
-            .with_outbox(outbox);
+            .with_outbox(outbox)
+            .with_liveness(liveness);
     alerting_service.start(&tracker);
 
     // Wait for shutdown signal (Ctrl+C, SIGTERM) or cancellation token to be triggered

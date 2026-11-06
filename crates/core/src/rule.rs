@@ -104,11 +104,18 @@ pub trait PollRule: Sized + Send + Sync + 'static {
     }
 
     fn evaluate(&self, item: &Self::Item, ctx: &PollCtx) -> Option<Alert>;
+
+    /// Every alert for one item. Defaults to [`Self::evaluate`]; override it for rules that can
+    /// raise several alerts per item (one per feed, per route), and return `None` from
+    /// `evaluate`.
+    fn evaluate_all(&self, item: &Self::Item, ctx: &PollCtx) -> Vec<Alert> {
+        self.evaluate(item, ctx).into_iter().collect()
+    }
 }
 
 pub type StreamEvalFn<Ev> = Arc<dyn Fn(&Ev, &StreamCtx) -> Option<Alert> + Send + Sync>;
 pub type SweepFn = Arc<dyn Fn() -> Vec<Alert> + Send + Sync>;
-pub type PollEvalFn<It> = Arc<dyn Fn(&It, &PollCtx) -> Option<Alert> + Send + Sync>;
+pub type PollEvalFn<It> = Arc<dyn Fn(&It, &PollCtx) -> Vec<Alert> + Send + Sync>;
 
 /// A bootstrapped stream rule with its type erased; the handler and the sweep loop share it.
 pub struct BuiltStreamRule<Ev> {
@@ -153,7 +160,7 @@ impl<It: Send + Sync + 'static> BuiltPollRule<It> {
     pub fn new<R: PollRule<Item = It>>(rule: R) -> Self {
         Self {
             id: R::ID,
-            evaluate: Arc::new(move |item: &It, ctx: &PollCtx| rule.evaluate(item, ctx)),
+            evaluate: Arc::new(move |item: &It, ctx: &PollCtx| rule.evaluate_all(item, ctx)),
         }
     }
 }
