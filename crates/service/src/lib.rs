@@ -174,6 +174,9 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
     let reason = wait_for_shutdown(&cancel_token, &signalled, &completed).await;
 
     cancel_token.cancel();
+    // The alert tap runs until every rule sender is gone; this one would keep it (and so
+    // `tracker.wait()`) alive forever once the pipelines have stopped.
+    drop(rules_tx);
     tracker.close();
     tracker.wait().await;
 
