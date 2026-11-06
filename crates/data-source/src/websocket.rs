@@ -29,6 +29,7 @@ use solana_rpc_client_api::config::{
 use solana_rpc_client_api::filter::{Memcmp, RpcFilterType};
 use solana_rpc_client_api::response::SlotInfo;
 use solana_signature::Signature;
+use utility::redact::{redact_url, redact_urls};
 use solana_transaction_status_client_types::UiTransactionEncoding;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::str::FromStr;
@@ -93,10 +94,14 @@ impl WebsocketSource {
         } = ctx;
         let commitment = self.commitment()?;
         let client = PubsubClient::new(&self.config.url).await.map_err(|e| {
-            let msg = format!("Failed to connect to PubSub at {}: {e}", self.config.url);
+            let msg = format!(
+                "Failed to connect to PubSub at {}: {}",
+                redact_url(&self.config.url),
+                redact_urls(&e.to_string())
+            );
             shipstern::Error::Other(msg.into())
         })?;
-        info!(url = %self.config.url, "PubSub connected");
+        info!(url = %redact_url(&self.config.url), "PubSub connected");
 
         let mut streams: SelectAll<BoxStream<'_, Event>> = SelectAll::new();
         let mut opened = Opened::default();
