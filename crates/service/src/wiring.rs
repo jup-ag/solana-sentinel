@@ -9,6 +9,7 @@ use alerting::local_gate::LocalGate;
 use alerting::router::Router;
 use alerting::sinks::betterstack::BetterstackSink;
 use alerting::sinks::clickhouse::ClickhouseSink;
+use alerting::sinks::jsonl::JsonlSink;
 use alerting::sinks::slack::SlackSink;
 use alerting::sinks::stdout::StdoutSink;
 use alerting::sinks::{AlertSink, AlertSinkError};
@@ -88,6 +89,14 @@ pub(crate) fn build_sinks(
             SinkConfig::Slack(s) => Box::new(build_slack(s)?),
             SinkConfig::Betterstack(b) => Box::new(build_betterstack(b)?),
             SinkConfig::Stdout(s) => Box::new(StdoutSink::new(s.id.clone())),
+            SinkConfig::Jsonl(s) => {
+                Box::new(JsonlSink::open(s.id.clone(), &s.path).map_err(|e| {
+                    WiringError::SinkBuild {
+                        id: s.id.clone(),
+                        source: AlertSinkError::Jsonl(format!("{}: {e}", s.path.display())),
+                    }
+                })?)
+            }
         };
         out.insert(id, sink);
     }
