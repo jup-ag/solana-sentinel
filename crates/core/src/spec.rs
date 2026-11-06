@@ -6,9 +6,10 @@
 
 use crate::deps::{Deps, ProgramDeps};
 use crate::dynamic::DynamicScope;
-use crate::handler::RuleHandler;
+use crate::handler::{HandlerLiveness, RuleHandler};
 use crate::parser::{
-    scoped_parser_id, FrameworkParser, PipelineKind, StreamInput, StreamPipeline, TxGate,
+    scoped_parser_id, FrameworkParser, InputMatcher, PipelineKind, StreamInput, StreamPipeline,
+    TxGate,
 };
 use crate::poll::{spawn_poll_loop, PollSource};
 use crate::reactor::{
@@ -25,6 +26,7 @@ use domain::alert::Alert;
 use domain::programs::Program;
 use domain::rules::RuleId;
 use futures::future::BoxFuture;
+use observability::liveness::FeedKind;
 use shipstern::filter_pipeline::FilterPipeline;
 use shipstern::handler::BoxPipeline;
 use shipstern_core::Parser;
@@ -158,6 +160,7 @@ where
         let base_id = self.parser.id().into_owned();
         let static_subscription = self.rules.static_subscription();
         let dynamic = self.rules.dynamic_scope().clone();
+        let per_rule = self.rules.subscriptions();
         let rules = self.rules.build(deps, &ctx.bootstrap).await?;
         let rule_names: Vec<_> = rules.iter().map(|r| r.id.name).collect();
 
@@ -175,7 +178,27 @@ where
             return Ok(());
         }
 
-        let handler = RuleHandler::new(rules.clone(), ctx.alerts_tx.clone());
+        let liveness = &ctx.bootstrap.liveness;
+        let pipeline_feed = liveness.feed(program.as_str(), kind.feed_kind(), &base_id, None);
+        let rule_feeds = per_rule
+            .iter()
+            .map(|(id, sub)| {
+                (
+                    InputMatcher::from_subscription(sub),
+                    liveness.feed(
+                        program.as_str(),
+                        FeedKind::Rule,
+                        id.name,
+                        Some(&pipeline_feed),
+                    ),
+                )
+            })
+            .collect();
+        let handler =
+            RuleHandler::new(rules.clone(), ctx.alerts_tx.clone()).with_liveness(HandlerLiveness {
+                pipeline: pipeline_feed,
+                rules: rule_feeds,
+            });
         let gate =
             (kind == PipelineKind::Instruction).then(|| TxGate::from_subscription(&subscription));
         let subscriptions = subs.len();
@@ -291,7 +314,7 @@ impl<S: PollSource> ValidatedPipeline for PollValidated<S> {
                 program,
                 Arc::clone(&self.source),
                 bucket,
-                Arc::clone(&ctx.bootstrap.rpc),
+                &ctx.bootstrap,
                 ctx.alerts_tx.clone(),
                 ctx.cancel_token.clone(),
                 ctx.tracker,

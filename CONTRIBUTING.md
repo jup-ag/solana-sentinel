@@ -154,6 +154,32 @@ A poll-fed program implements `PollSource` and registers `PollRule`s with
 `.poll(source, default_interval, rules)`. Rules on the same cadence share one
 `getMultipleAccounts` per tick.
 
+## Monitoring the monitor
+
+The framework records what every feed receives: each stream pipeline
+(`{program}:{account|instruction|transaction}:{parser}`), each rule's share of its pipeline
+(`{program}:rule:{rule}`, matched against the rule's static subscription; a rule fed only by the
+dynamic subscription counts every update) and each poll bucket (`{program}:poll:{Source}:{n}s`,
+successes and failed fetches). Two rules in the registry's `health` program use it, both on a
+`TickSource` (no RPC, so they keep running when the RPC is down):
+
+- `feed_liveness`: Critical `action = alert` when the gRPC stream delivers no slot for
+  `stream_stall_seconds`, a poll source fails `poll_failure_threshold` fetches in a row, or a
+  feed that normally sees traffic is silent past its bound (`p99_factor` × p99 inter-arrival
+  gap, floor `min_silence_seconds`, learned after `min_samples` gaps; or a configured
+  `[[rules.config.bounds]]`). A rule feed is not alerted while its pipeline is.
+- `canary`: every `interval_seconds` one synthetic alert per route (`scope = "route"`: each
+  distinct sink set; `"program"`: each program's sinks) through the tap, gates, batching and
+  sinks. Canaries carry `canary = "true"`; reactors skip them, Slack acknowledges them without
+  posting (or posts to `canary_channel`), Betterstack opens no incident, ClickHouse stores them.
+  The service's canary watchdog raises a Critical alert, routed by the `canary` rule's own sinks,
+  for each route/sink pair whose freshest canary is older than `interval + deadline`, and the
+  Betterstack heartbeat is withheld meanwhile (`gate_on_canary`, default on).
+
+`GET /liveness` returns the per-feed and canary state; metrics `feed_*`, `canary_*`,
+`stream_slot_age_seconds`, `heartbeat_withheld_total`. `solana_sentinel_service::testing`
+(feature `testing`) runs programs end to end on a scripted source with in-memory sinks.
+
 ## Data sources
 
 Rules never see the transport. Every source implements shipstern's `SourceTrait` and runs in

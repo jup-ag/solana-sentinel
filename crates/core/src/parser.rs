@@ -5,13 +5,14 @@
 //! transactions another program subscribed to.
 
 use crate::rule::StreamCtx;
-use crate::subscription::Subscription;
+use crate::subscription::{OwnedAccounts, Subscription};
 use domain::programs::Program;
 use observability::prometheus::metrics::GrpcEvent;
 use shipstern::handler::BoxPipeline;
 use shipstern_core::instruction::{AccountKeys, InstructionUpdate};
 use shipstern_core::{
-    AccountUpdate, ParseError, ParseResult, Parser, PrefilterBuilder, TransactionUpdate,
+    AccountFilter, AccountUpdate, MemcmpData, ParseError, ParseResult, Parser, PrefilterBuilder,
+    TransactionUpdate,
 };
 use solana_pubkey::Pubkey;
 use std::borrow::Cow;
@@ -28,6 +29,12 @@ pub trait StreamInput: Send + Sync + 'static {
     fn passes_gate(&self, _gate: &TxGate) -> bool {
         true
     }
+
+    /// Whether this update is part of a rule's own input (its static subscription), for
+    /// per-rule liveness. Kinds without a local check count every update.
+    fn matches_input(&self, matcher: &InputMatcher) -> bool {
+        matcher.all
+    }
 }
 
 impl StreamInput for AccountUpdate {
@@ -42,6 +49,49 @@ impl StreamInput for AccountUpdate {
                 .map(bytes_to_signature_str),
             account: account.and_then(|a| Pubkey::try_from(a.pubkey.as_slice()).ok()),
         }
+    }
+
+    fn matches_input(&self, matcher: &InputMatcher) -> bool {
+        if matcher.all {
+            return true;
+        }
+        let Some(account) = self.account.as_ref() else {
+            return false;
+        };
+        if let Ok(pubkey) = Pubkey::try_from(account.pubkey.as_slice()) {
+            if matcher.accounts.contains(&pubkey) {
+                return true;
+            }
+        }
+        let Ok(owner) = Pubkey::try_from(account.owner.as_slice()) else {
+            return false;
+        };
+        matcher.owned.iter().any(|o| {
+            o.owners.contains(&owner) && o.filters.iter().all(|f| filter_matches(f, account))
+        })
+    }
+}
+
+/// Best-effort local check of one server-side account filter; filters it cannot evaluate pass.
+fn filter_matches(filter: &AccountFilter, account: &shipstern_core::AccountUpdateInfo) -> bool {
+    match filter {
+        AccountFilter::Memcmp { offset, data } => {
+            let bytes = match data {
+                MemcmpData::Bytes(b) => b.clone(),
+                MemcmpData::Base58(s) => match shipstern_core::bs58::decode(s).into_vec() {
+                    Ok(b) => b,
+                    Err(_) => return true,
+                },
+                MemcmpData::Base64(_) => return true,
+            };
+            let start = usize::try_from(*offset).unwrap_or(usize::MAX);
+            account
+                .data
+                .get(start..start.saturating_add(bytes.len()))
+                .is_some_and(|window| window == bytes.as_slice())
+        }
+        AccountFilter::DataSize(size) => account.data.len() as u64 == *size,
+        AccountFilter::TokenAccountState(_) | AccountFilter::Lamports(_) => true,
     }
 }
 
@@ -58,6 +108,10 @@ impl StreamInput for InstructionUpdate {
 
     fn passes_gate(&self, gate: &TxGate) -> bool {
         gate.matches(&self.shared.accounts)
+    }
+
+    fn matches_input(&self, matcher: &InputMatcher) -> bool {
+        matcher.all || (matcher.watches_tx && matcher.tx.matches(&self.shared.accounts))
     }
 }
 
@@ -108,6 +162,16 @@ impl PipelineKind {
         }
     }
 
+    pub fn feed_kind(self) -> observability::liveness::FeedKind {
+        use observability::liveness::FeedKind;
+        match self {
+            Self::Account => FeedKind::Account,
+            Self::Instruction => FeedKind::Instruction,
+            Self::Transaction => FeedKind::Transaction,
+            Self::Poll => FeedKind::Poll,
+        }
+    }
+
     pub(crate) fn metric(self) -> GrpcEvent {
         match self {
             Self::Account => GrpcEvent::AccountUpdate,
@@ -125,6 +189,40 @@ pub enum StreamPipeline {
     Account(BoxPipeline<'static, AccountUpdate>),
     Instruction(BoxPipeline<'static, InstructionUpdate>),
     Transaction(BoxPipeline<'static, TransactionUpdate>),
+}
+
+/// One rule's own input inside its pipeline, from the rule's static subscription. A rule
+/// with no static subscription (fed only by the program's dynamic one) counts every update.
+#[derive(Debug, Clone, Default)]
+pub struct InputMatcher {
+    /// Count every update of the pipeline.
+    pub all: bool,
+    pub accounts: HashSet<Pubkey>,
+    pub owned: Vec<OwnedAccounts>,
+    watches_tx: bool,
+    tx: TxGate,
+}
+
+impl InputMatcher {
+    pub fn all() -> Self {
+        Self {
+            all: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn from_subscription(subscription: &Subscription) -> Self {
+        if subscription == &Subscription::default() {
+            return Self::all();
+        }
+        Self {
+            all: false,
+            accounts: subscription.accounts.clone(),
+            owned: subscription.owned.clone(),
+            watches_tx: subscription.watches_transactions(),
+            tx: TxGate::from_subscription(subscription),
+        }
+    }
 }
 
 /// The transaction-level part of a pipeline's subscription, re-checked locally.

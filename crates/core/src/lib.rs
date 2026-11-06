@@ -38,9 +38,10 @@ pub use domain::alert::{Alert, DedupScope, Severity};
 pub use domain::programs::Program;
 pub use domain::rules::RuleId;
 pub use dynamic::{DynamicScope, DynamicSubscription, DynamicTag};
+pub use observability::liveness::{FeedHandle, FeedKind, Liveness};
 pub use observability::slot_tracker::GrpcSlotReader;
 pub use parser::StreamPipeline;
-pub use poll::PollSource;
+pub use poll::{PollSource, Tick, TickSource};
 pub use reactor::{BuiltReactor, ReactCtx, ReactorRule};
 pub use rule::{NoConfig, PollCtx, PollRule, RuleConfigError, StreamCtx, StreamRule};
 pub use rule_set::{PollRules, StreamRules};
@@ -62,6 +63,8 @@ pub struct BootstrapCtx {
     pub grpc_slot: GrpcSlotReader,
     /// This node's identity (the pod hostname), for rules whose condition is per-node.
     pub pod_id: String,
+    /// Per-feed liveness and canary state, shared by every pipeline and the health rules.
+    pub liveness: Liveness,
 }
 
 /// Raw per-rule config payloads keyed by rule name, straight from `rules.toml`.

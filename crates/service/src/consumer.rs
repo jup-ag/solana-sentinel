@@ -21,7 +21,8 @@ use shipstern_slot_parser::SlotParser;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sentinel::refresh::spawn_refresh_loops;
 use solana_sentinel::{
-    BootstrapCtx, BuiltReactor, StartCtx, StartedProgram, StreamPipeline, ValidatedProgram,
+    BootstrapCtx, BuiltReactor, Liveness, StartCtx, StartedProgram, StreamPipeline,
+    ValidatedProgram,
 };
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -38,9 +39,11 @@ pub struct ConsumerService {
     rpc: Arc<RpcClient>,
     slot_tracker: SlotTracker,
     pod_id: String,
+    liveness: Liveness,
 }
 
 impl ConsumerService {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: &Arc<SentinelConfig>,
         programs: Vec<ValidatedProgram>,
@@ -49,6 +52,7 @@ impl ConsumerService {
         rpc: Arc<RpcClient>,
         slot_tracker: SlotTracker,
         pod_id: String,
+        liveness: Liveness,
     ) -> Self {
         Self {
             config: Arc::clone(config),
@@ -58,6 +62,7 @@ impl ConsumerService {
             rpc,
             slot_tracker,
             pod_id,
+            liveness,
         }
     }
 
@@ -73,6 +78,7 @@ impl ConsumerService {
             rpc,
             slot_tracker,
             pod_id,
+            liveness,
         } = self;
 
         if programs.is_empty() {
@@ -89,6 +95,7 @@ impl ConsumerService {
                 rpc,
                 grpc_slot: slot_tracker.reader(),
                 pod_id,
+                liveness,
             },
             alerts_tx,
             cancel_token: cancel_token.clone(),

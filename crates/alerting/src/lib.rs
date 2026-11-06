@@ -10,6 +10,7 @@
 //! [`Alert`]: domain::alert::Alert
 //! [`RuleId`]: domain::rules::RuleId
 
+pub mod canary_watchdog;
 mod claim;
 pub mod cooldown_gate;
 pub mod fleet_gate;
