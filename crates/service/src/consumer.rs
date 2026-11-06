@@ -2,16 +2,18 @@
 //! build pipelines, spawn poll / sweep loops), load the stream pipelines into
 //! one shipstern runtime, run it.
 
-use crate::config::service::{BufferSettings, DataSourceConfig};
+use crate::config::service::{BufferSettings, DataSourceConfig, MultiSourceConfig};
 use crate::config::SentinelConfig;
-use anyhow::Result;
+use anyhow::{Context, Result};
+use data_source::rpc::build_rpc_client;
 use data_source::{
-    KafkaConfig, KafkaSource, WebsocketConfig, WebsocketSource, YellowstoneGrpcConfig,
-    YellowstoneGrpcSource,
+    ChildConfig, ChildSourceConfig, KafkaConfig, KafkaSource, MultiConfig, MultiSource,
+    WebsocketConfig, WebsocketSource, YellowstoneGrpcConfig, YellowstoneGrpcSource,
 };
 use domain::alert::Alert;
 use futures::future::try_join_all;
 use observability::slot_tracker::SlotTracker;
+use observability::source_health::SourceHealth;
 use shipstern::config::{BufferConfig, ShipsternConfig};
 use shipstern::filter_pipeline::FilterPipeline;
 use shipstern::sources::{FilterUpdateSource, FromConfig};
@@ -80,6 +82,8 @@ impl ConsumerService {
             pod_id,
             liveness,
         } = self;
+        // Filled by a `multi` data source; read by the `health/source_divergence` rule.
+        let source_health = SourceHealth::new();
 
         if programs.is_empty() {
             warn!("No programs enabled; service will only keep the source connection alive");
@@ -96,6 +100,7 @@ impl ConsumerService {
                 grpc_slot: slot_tracker.reader(),
                 pod_id,
                 liveness,
+                source_health: source_health.clone(),
             },
             alerts_tx,
             cancel_token: cancel_token.clone(),
@@ -122,55 +127,124 @@ impl ConsumerService {
 
         // The runtime is generic over its source, so the config variant picks the type here.
         match config.data_source() {
-            DataSourceConfig::YellowstoneGrpc(c) => {
-                if !c.auto_reconnect {
-                    // yellowstone-grpc-client 13.x runs dedup with slot retention 0 when reconnect
-                    // is off and never prunes sealed slots: memory grows ~60 MB/day until OOM.
-                    warn!(
-                        "auto_reconnect = false leaks memory in the gRPC client; keep it on in \
-                         production"
-                    );
-                }
-                launch.run::<YellowstoneGrpcSource>(
-                    YellowstoneGrpcConfig {
-                        endpoint: c.endpoint.clone(),
-                        x_token: c.token.clone(),
-                        timeout: c.timeout_seconds,
-                        // Fastest path short of shred-level monitoring.
-                        commitment_level: Some(CommitmentLevel::Processed),
-                        from_slot,
-                        accounts_data_slice: Vec::new(),
-                        max_decoding_message_size: Some(c.max_decoding_message_size),
-                        accept_compression: None,
-                        auto_reconnect: c.auto_reconnect,
-                        reconnect_max_retries: None,
-                        reconnect_slot_retention: None,
-                    },
-                    &c.buffer,
-                )
+            DataSourceConfig::Multi(m) => {
+                let multi = multi_config(m, &config, from_slot, source_health)?;
+                launch.run::<MultiSource>(multi, &m.buffer);
             }
-            DataSourceConfig::Websocket(c) => launch.run::<WebsocketSource>(
-                WebsocketConfig {
-                    url: c.url.clone(),
-                    rpc_url: config.rpc().url.to_string(),
-                    rpc_headers: config.rpc().headers.clone(),
-                    commitment: c.commitment.clone(),
-                },
-                &c.buffer,
-            ),
-            DataSourceConfig::Kafka(c) => launch.run::<KafkaSource>(
-                KafkaConfig {
-                    brokers: c.brokers.clone(),
-                    group_id: c.group_id.clone(),
-                    topics: c.topics.clone(),
-                    auto_offset_reset: c.auto_offset_reset.clone(),
-                    properties: c.properties.clone(),
-                },
-                &c.buffer,
-            ),
+            single => match child_config(single, &config, from_slot)? {
+                ChildSourceConfig::YellowstoneGrpc(c) => {
+                    launch.run::<YellowstoneGrpcSource>(c, buffer_of(single));
+                }
+                ChildSourceConfig::Websocket(c) => {
+                    launch.run::<WebsocketSource>(c, buffer_of(single));
+                }
+                ChildSourceConfig::Kafka(c) => launch.run::<KafkaSource>(c, buffer_of(single)),
+            },
         }
         Ok(reactors)
     }
+}
+
+fn buffer_of(c: &DataSourceConfig) -> &BufferSettings {
+    match c {
+        DataSourceConfig::YellowstoneGrpc(c) => &c.buffer,
+        DataSourceConfig::Websocket(c) => &c.buffer,
+        DataSourceConfig::Kafka(c) => &c.buffer,
+        DataSourceConfig::Multi(c) => &c.buffer,
+    }
+}
+
+/// The source config for one (non-`multi`) `[data_source]` table, or one `multi` child.
+fn child_config(
+    c: &DataSourceConfig,
+    config: &SentinelConfig,
+    from_slot: Option<u64>,
+) -> Result<ChildSourceConfig> {
+    Ok(match c {
+        DataSourceConfig::YellowstoneGrpc(c) => {
+            if !c.auto_reconnect {
+                // yellowstone-grpc-client 13.x runs dedup with slot retention 0 when reconnect
+                // is off and never prunes sealed slots: memory grows ~60 MB/day until OOM.
+                warn!(
+                    "auto_reconnect = false leaks memory in the gRPC client; keep it on in \
+                     production"
+                );
+            }
+            ChildSourceConfig::YellowstoneGrpc(YellowstoneGrpcConfig {
+                endpoint: c.endpoint.clone(),
+                x_token: c.token.clone(),
+                timeout: c.timeout_seconds,
+                // Processed by default: fastest path short of shred-level monitoring.
+                commitment_level: Some(c.commitment.unwrap_or(CommitmentLevel::Processed)),
+                from_slot,
+                accounts_data_slice: Vec::new(),
+                max_decoding_message_size: Some(c.max_decoding_message_size),
+                accept_compression: None,
+                auto_reconnect: c.auto_reconnect,
+                reconnect_max_retries: None,
+                reconnect_slot_retention: None,
+            })
+        }
+        DataSourceConfig::Websocket(c) => {
+            let (rpc_url, rpc_headers) = match &c.rpc_url {
+                Some(url) => (url.to_string(), c.rpc_headers.clone().unwrap_or_default()),
+                None => (
+                    config.rpc().url.to_string(),
+                    c.rpc_headers
+                        .clone()
+                        .unwrap_or_else(|| config.rpc().headers.clone()),
+                ),
+            };
+            // `WebsocketSource::from_config` expects headers it can build a client from.
+            build_rpc_client(&rpc_url, &rpc_headers).context("websocket source rpc_headers")?;
+            ChildSourceConfig::Websocket(WebsocketConfig {
+                url: c.url.clone(),
+                rpc_url,
+                rpc_headers,
+                commitment: c.commitment.clone(),
+            })
+        }
+        DataSourceConfig::Kafka(c) => ChildSourceConfig::Kafka(KafkaConfig {
+            brokers: c.brokers.clone(),
+            group_id: c.group_id.clone(),
+            topics: c.topics.clone(),
+            auto_offset_reset: c.auto_offset_reset.clone(),
+            properties: c.properties.clone(),
+        }),
+        DataSourceConfig::Multi(_) => anyhow::bail!("a multi data source cannot contain another"),
+    })
+}
+
+fn multi_config(
+    m: &MultiSourceConfig,
+    config: &SentinelConfig,
+    from_slot: Option<u64>,
+    health: SourceHealth,
+) -> Result<MultiConfig> {
+    let sources = m
+        .sources
+        .iter()
+        .map(|c| {
+            Ok(ChildConfig {
+                name: c.name.clone(),
+                source: child_config(&c.source, config, from_slot)
+                    .with_context(|| format!("data_source child `{}`", c.name))?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let multi = MultiConfig {
+        sources,
+        grace_seconds: m.grace_seconds,
+        retention_seconds: m.retention_seconds,
+        max_entries: m.max_entries,
+        health,
+    };
+    multi.validate()?;
+    info!(
+        children = ?m.sources.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        "Multi data source configured"
+    );
+    Ok(multi)
 }
 
 /// Everything needed to build and run the runtime once the source type is known.

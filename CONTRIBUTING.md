@@ -193,6 +193,49 @@ its runtime, which dispatches by filter name; `[data_source]` picks it:
 | `yellowstone_grpc` | `shipstern_yellowstone_grpc_source::YellowstoneGrpcSource` | server-side filter names, filter updates, reconnect with slot replay + dedup; production default |
 | `websocket` | `WebsocketSource` (`solana-sentinel-data-source`) | PubSub `accountSubscribe` / `programSubscribe` / `logsSubscribe` + `getTransaction`; commitment ≥ `confirmed` |
 | `kafka` | `KafkaSource` (`solana-sentinel-data-source`) | janus `raw.<program>.{accounts,transactions}` topics; slot feed synthesized from record slots |
+| `multi` | `MultiSource` (`solana-sentinel-data-source`) | N children of the types above, same filters, merged and deduplicated; per-child health for `health/source_divergence` |
+
+### Two providers (`type = "multi"`)
+
+`MultiSource` (crates/data-source/src/multi.rs) runs every `[[data_source.sources]]` child
+in its own task with the runtime's filters, and fans each filter update out to all of them.
+Their updates are merged:
+
+- **Dedup.** Transactions by signature; account updates by `(pubkey, slot, hash of
+  lamports/owner/executable/data)` (PubSub has no write version, so it cannot be in a
+  cross-provider key); slots by `(slot, status)`. The first delivery is forwarded. A later
+  copy is forwarded only for filter names the first did not carry, restricted to those
+  names, so a rule sees each event once whichever child tagged it.
+- **Divergence.** Per item (signature, or account `(pubkey, slot)`): which children
+  delivered it and how long after the first. When `grace_seconds` closes, a child that was
+  connected and already past that slot but never delivered it counts it `missing`; items
+  older than a child's first slot since its (re)connect are not expected from it (a
+  replaying sibling, its own downtime). Copies after the window count `late` and are still
+  deduplicated for `retention_seconds`.
+- **Isolation.** A child that fails, ends or panics is restarted with backoff (1 s doubling
+  to 30 s); the others keep streaming. Errors a child emits are logged and dropped, never
+  forwarded (the runtime stops on the first error it receives).
+- **Health.** `SourceHealth` (crates/observability/src/source_health.rs) is shared through
+  `BootstrapCtx::source_health`. The `health/source_divergence` poll rule alerts when a child
+  is silent (`silence_seconds`, default 60), more than `max_lag_slots` (50) behind the most
+  advanced child, or missing more than `max_missing_pct` (5 %) of the others' items over
+  `window_seconds` (300, judged from `min_expected` = 100 items). Metrics:
+  `data_source_up`, `data_source_slot{kind=slot|lag}`, `data_source_items_total{kind=
+  delivered|first|expected|missing|late}`, `data_source_delay_seconds`,
+  `data_source_restarts_total`, all labelled `source`.
+
+Compare like with like: gRPC defaults to `processed` (every write, forks included) while
+PubSub is `confirmed` (one notification per slot, at most). A gRPC child at `processed`
+therefore shows PubSub "missing" intermediate writes and dropped-fork transactions; set the
+gRPC child's `commitment = "confirmed"` when measuring divergence, or raise
+`max_missing_pct`. A websocket child's `getTransaction` goes to `[rpc]` unless it has its own
+`rpc_url` (and `rpc_headers`); give it one on the same provider, or it is not independent.
+
+Live check: `cargo run -p solana-sentinel-data-source --example multi_live -- --minutes 10`
+splits the Solana CLI's configured RPC (Triton/rpcpool layout: gRPC endpoint = scheme +
+host, x-token = the path token) into a gRPC child and a PubSub child and prints delivery
+share, delays and gaps; `--config <file>` takes any `MultiConfig` TOML instead (keep it
+git-ignored). It refuses public RPCs and never prints endpoints or tokens.
 
 To add a transport, implement `shipstern::sources::SourceTrait` (and `FilterUpdateSource` if
 it can apply later filter sets): emit `SubscribeUpdate`s whose `filters` name the parsers they

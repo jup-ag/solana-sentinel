@@ -38,8 +38,8 @@ use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sentinel::reactor::spawn_alert_tap;
 use solana_sentinel::{
-    BootstrapCtx, BuiltReactor, FeedKind, GrpcSlotReader, Liveness, ProgramSpec, StartCtx,
-    StreamPipeline,
+    BootstrapCtx, BuiltReactor, FeedKind, GrpcSlotReader, Liveness, ProgramSpec, SourceHealth,
+    StartCtx, StreamPipeline,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -311,6 +311,7 @@ impl Harness {
                 grpc_slot: GrpcSlotReader::detached(),
                 pod_id: HARNESS_NODE.to_string(),
                 liveness: liveness.clone(),
+                source_health: SourceHealth::new(),
             },
             alerts_tx: rules_tx.clone(),
             cancel_token: cancel.clone(),

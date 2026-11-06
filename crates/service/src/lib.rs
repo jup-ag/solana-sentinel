@@ -9,7 +9,6 @@ mod utils;
 pub mod validate;
 pub mod wiring;
 
-use crate::config::service::DataSourceConfig;
 use crate::config::SentinelConfig;
 use crate::consumer::ConsumerService;
 use crate::utils::{
@@ -56,6 +55,7 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
     info!(service = opts.service_name, "Starting service");
 
     let config = Arc::new(SentinelConfig::load()?);
+    config.data_source().validate()?;
     info!("Configuration loaded");
 
     // Typed rule config is checked before anything connects; `check` stops here.
@@ -107,7 +107,7 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
         &pod_id,
         cancel_token.clone(),
         &tracker,
-        matches!(config.data_source(), DataSourceConfig::YellowstoneGrpc(_)),
+        config.data_source().has_yellowstone(),
     )
     .await
     .context("Failed to initialize slot tracker")?;
