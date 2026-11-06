@@ -5,6 +5,7 @@
 //! traits so every program fits one registry entry.
 
 use crate::deps::{Deps, ProgramDeps};
+use crate::dynamic::DynamicScope;
 use crate::handler::RuleHandler;
 use crate::parser::{
     scoped_parser_id, FrameworkParser, PipelineKind, StreamInput, StreamPipeline, TxGate,
@@ -140,6 +141,7 @@ where
             stream: Some(StreamReport {
                 per_rule: self.rules.subscriptions(),
                 union: self.rules.static_subscription(),
+                dynamic: self.rules.dynamic_scope().clone(),
             }),
             polls: Vec::new(),
         }
@@ -155,12 +157,13 @@ where
         let kind = P::Input::KIND;
         let base_id = self.parser.id().into_owned();
         let static_subscription = self.rules.static_subscription();
+        let dynamic = self.rules.dynamic_scope().clone();
         let rules = self.rules.build(deps, &ctx.bootstrap).await?;
         let rule_names: Vec<_> = rules.iter().map(|r| r.id.name).collect();
 
         let subscription = static_subscription
             .clone()
-            .union(out.deps.dynamic_subscription());
+            .union(out.deps.tagged_dynamic_subscription().select(&dynamic));
         let subs = kind.prefilters(&subscription);
         if subs.is_empty() {
             warn!(
@@ -190,6 +193,7 @@ where
             kind = kind.as_str(),
             parser = %base_id,
             subscriptions,
+            dynamic = %dynamic,
             rules = ?rule_names,
             "Pipeline built"
         );
@@ -200,6 +204,8 @@ where
             base_id,
             parser_prefilter: self.parser.prefilter(),
             static_subscription,
+            dynamic,
+            subscription,
             subscriptions,
         });
         Ok(())
@@ -537,6 +543,11 @@ pub(crate) struct InstalledStream {
     pub base_id: String,
     pub parser_prefilter: shipstern_core::Prefilter,
     pub static_subscription: Subscription,
+    /// The parts of the dynamic subscription this pipeline takes.
+    pub dynamic: DynamicScope,
+    /// Static plus selected dynamic subscription, as the pipeline was built; the refresh loop
+    /// pushes only when this changes.
+    pub subscription: Subscription,
     pub subscriptions: usize,
 }
 
@@ -559,6 +570,8 @@ pub struct PipelineReport {
 pub struct StreamReport {
     pub per_rule: Vec<(RuleId, Subscription)>,
     pub union: Subscription,
+    /// Which parts of the program's dynamic subscription the pipeline adds on top of `union`.
+    pub dynamic: DynamicScope,
 }
 
 pub struct PollReport {
@@ -580,6 +593,7 @@ impl Display for ProgramReport {
                     writeln!(f, "    {}: {}", id.name, describe(pf))?;
                 }
                 writeln!(f, "    subscription: {}", describe(&stream.union))?;
+                writeln!(f, "    dynamic: {}", stream.dynamic)?;
             }
             for poll in &p.polls {
                 writeln!(
@@ -693,6 +707,28 @@ mod tests {
             .union
             .clone();
         assert!(union.tx_accounts_include.contains(&WATCHED));
+
+        // Default scope: the whole dynamic subscription, as before scopes existed.
+        let report = validated.report();
+        assert_eq!(
+            report.pipelines[0].stream.as_ref().unwrap().dynamic,
+            DynamicScope::All
+        );
+        assert!(report.to_string().contains("dynamic: all"));
+
+        let tag = crate::DynamicTag::new("followed");
+        let scoped = ProgramSpec::new(PROGRAM).instruction(
+            RawInstructionParser,
+            StreamRules::new()
+                .register::<AnyIx>()
+                .dynamic(DynamicScope::only([tag])),
+        );
+        let report = scoped.validate(&raw).unwrap().report();
+        assert_eq!(
+            report.pipelines[0].stream.as_ref().unwrap().dynamic,
+            DynamicScope::only([tag])
+        );
+        assert!(report.to_string().contains("dynamic: followed"));
 
         let unknown = RawRuleMap::from([("nope".to_string(), config::Value::from(1))]);
         assert!(matches!(

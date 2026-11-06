@@ -11,6 +11,7 @@
 
 pub mod cache;
 pub mod deps;
+pub mod dynamic;
 pub mod handler;
 pub mod parser;
 pub mod poll;
@@ -32,10 +33,11 @@ pub use ::observability;
 /// Pubkey / RPC / math helpers for rule authors.
 pub use ::utility;
 pub use cache::{StateCache, UnknownKey};
-pub use deps::{Deps, ProgramDeps};
+pub use deps::{Deps, ProgramDeps, DEFAULT_MIN_PUSH_INTERVAL};
 pub use domain::alert::{Alert, DedupScope, Severity};
 pub use domain::programs::Program;
 pub use domain::rules::RuleId;
+pub use dynamic::{DynamicScope, DynamicSubscription, DynamicTag};
 pub use observability::slot_tracker::GrpcSlotReader;
 pub use parser::StreamPipeline;
 pub use poll::PollSource;
