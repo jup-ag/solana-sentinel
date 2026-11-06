@@ -73,5 +73,10 @@ bytes), write the rules, and add `<crate>::spec` to `PROGRAMS` in your binary.
 A program whose rules share chain-discovered state (vault lists, PDAs found by scanning)
 implements `ProgramDeps`, calls `.deps::<MyDeps>()` on the spec, and returns those accounts
 from `dynamic_subscription`; `refresh_interval` + `refresh` push a changed set to the live
-subscription without a restart. Rules reach it with `deps.get::<MyDeps>()?` in `build`.
+subscription without a restart. By default every stream pipeline of the program takes the
+whole dynamic set; to keep accounts on the pipelines that decode them, return a tagged
+`DynamicSubscription` from `tagged_dynamic_subscription` and give each pipeline
+`StreamRules::new().dynamic(DynamicScope::only([TAG]))` (or `DynamicScope::none()`). A refresh
+pushes only the pipelines whose set changed, in one update, at most once per
+`min_push_interval` (10 s by default). Rules reach it with `deps.get::<MyDeps>()?` in `build`.
 This example needs none, so its rules ignore the `deps` argument.
