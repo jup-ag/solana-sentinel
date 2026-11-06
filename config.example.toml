@@ -13,6 +13,11 @@
 #                             Records are matched locally, so a topic can carry more than the
 #                             rules need. Replicas that must each see every record need
 #                             distinct group_ids.
+#   type = "multi"            several of the above merged: all get the same filters, rules see
+#                             each update once (first delivery wins), and per-child lag,
+#                             silence and missing items feed the health/source_divergence
+#                             rule and the data_source_* metrics. See the commented example
+#                             below and CONTRIBUTING.md ("Two providers").
 # Every type also takes `sources_channel_size` (shipstern runtime buffer).
 # Anything else: implement `shipstern::sources::SourceTrait` (see crates/data-source/).
 [data_source]
@@ -29,6 +34,28 @@ max_decoding_message_size = 16777216
 # Bounded channel between the source and the pipelines, counted in updates, not bytes.
 # Larger = more tolerance for downstream stalls, more memory (large accounts add up fast).
 sources_channel_size = 10000
+
+# Two independent providers instead (replace the table above):
+# [data_source]
+# type = "multi"
+# grace_seconds = 30          # others have this long to deliver an item before it is "missing"
+# retention_seconds = 300     # dedup memory; must exceed the slowest child's delay
+# sources_channel_size = 10000
+#
+# [[data_source.sources]]
+# name = "provider-a"
+# type = "yellowstone_grpc"
+# endpoint = "https://grpc.provider-a.example"
+# token = "REPLACE_ME"
+# # commitment = "processed"  # default; "confirmed" compares like-for-like with PubSub
+#
+# [[data_source.sources]]
+# name = "provider-b"
+# type = "websocket"
+# url = "wss://ws.provider-b.example/REPLACE_ME"
+# # getTransaction on the same provider, so the child does not depend on [rpc]:
+# rpc_url = "https://rpc.provider-b.example/REPLACE_ME"
+# commitment = "confirmed"
 
 # RPC endpoint for on-demand queries (e.g. fetching account data).
 [rpc]

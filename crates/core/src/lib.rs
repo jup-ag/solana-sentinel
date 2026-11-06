@@ -40,6 +40,7 @@ pub use domain::rules::RuleId;
 pub use dynamic::{DynamicScope, DynamicSubscription, DynamicTag};
 pub use observability::liveness::{FeedHandle, FeedKind, Liveness};
 pub use observability::slot_tracker::GrpcSlotReader;
+pub use observability::source_health::SourceHealth;
 pub use parser::StreamPipeline;
 pub use poll::{PollSource, Tick, TickSource};
 pub use reactor::{BuiltReactor, ReactCtx, ReactorRule};
@@ -65,6 +66,8 @@ pub struct BootstrapCtx {
     pub pod_id: String,
     /// Per-feed liveness and canary state, shared by every pipeline and the health rules.
     pub liveness: Liveness,
+    /// Per-child health of a `multi` data source; empty with a single source.
+    pub source_health: SourceHealth,
 }
 
 /// Raw per-rule config payloads keyed by rule name, straight from `rules.toml`.

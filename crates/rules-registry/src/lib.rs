@@ -8,7 +8,7 @@
 //! | `spl_token` | `supply_increase`, `mint_authority_change` |
 //! | `bpf_loader` | `program_upgrade`, `upgrade_authority_change` |
 //! | `wallet` | `unapproved_program_invoke`, `anchor_idl_instruction` |
-//! | `health` | `slot_lag` |
+//! | `health` | `slot_lag`, `source_divergence` |
 //! | `squads_v4` | `new_proposal`, `new_member_addition`, `threshold_change`, `timelock_change` |
 //! | `pyth` | `oracle_staleness`, `reference_price_drift` |
 //! | `stable_coin` | `depeg_monitor` |

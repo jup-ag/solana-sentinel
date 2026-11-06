@@ -12,6 +12,7 @@ pub mod http_server;
 pub mod liveness;
 pub mod prometheus;
 pub mod slot_tracker;
+pub mod source_health;
 
 /// Betterstack heartbeat settings; `None` disables the heartbeat task (local runs).
 pub struct HeartbeatSettings<'a> {
