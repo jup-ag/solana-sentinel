@@ -7,11 +7,15 @@
 //!
 //! The tap ([`spawn_alert_tap`]) sits between the rule handlers and the alerting service:
 //! it hands each alert to the reactors that `accept` it (each reaction runs in its own task)
-//! and forwards the alert unchanged. Reactor output goes straight to the alerting service and
+//! and forwards the alert. Reactor output goes straight to the alerting service and
 //! is never fed back to reactors, so a reactor cannot loop on its own alerts.
+//!
+//! The tap first applies shadow mode ([`crate::shadow`]): an `L1` / `L2` from a rule in shadow
+//! is rewritten to `alert` before any reactor sees it, and forwarded rewritten.
 
 use crate::deps::Deps;
 use crate::rule::RuleConfigError;
+use crate::shadow::ShadowRules;
 use crate::BootstrapCtx;
 use async_trait::async_trait;
 use config::Value;
@@ -211,10 +215,34 @@ pub fn spawn_reactor_refresh_loops(
 /// Stops when `rules_rx` closes; reactions still running finish on the tracker.
 pub fn spawn_alert_tap(
     reactors: Vec<BuiltReactor>,
+    rules_rx: mpsc::Receiver<Alert>,
+    alerts_tx: mpsc::Sender<Alert>,
+    tracker: &TaskTracker,
+) {
+    spawn_alert_tap_with_shadow(
+        reactors,
+        ShadowRules::default(),
+        rules_rx,
+        alerts_tx,
+        tracker,
+    );
+}
+
+/// [`spawn_alert_tap`], and alerts of rules in `shadow` lose their pause action before any
+/// reactor sees them (see [`crate::shadow`]).
+pub fn spawn_alert_tap_with_shadow(
+    reactors: Vec<BuiltReactor>,
+    shadow: ShadowRules,
     mut rules_rx: mpsc::Receiver<Alert>,
     alerts_tx: mpsc::Sender<Alert>,
     tracker: &TaskTracker,
 ) {
+    if !shadow.is_empty() {
+        info!(
+            rules = shadow.len(),
+            "Alert tap withholding pause actions of rules in shadow"
+        );
+    }
     if !reactors.is_empty() {
         info!(
             reactors = ?reactors.iter().map(|r| r.id.name).collect::<Vec<_>>(),
@@ -224,7 +252,10 @@ pub fn spawn_alert_tap(
     let reactors: Arc<[BuiltReactor]> = reactors.into();
     let spawner = tracker.clone();
     tracker.spawn(async move {
-        while let Some(alert) = rules_rx.recv().await {
+        while let Some(mut alert) = rules_rx.recv().await {
+            if shadow.apply(&mut alert) {
+                info!(rule = %alert.rule, would_action = alert.metadata.get(crate::shadow::WOULD_ACTION).map(String::as_str), "Shadow rule: pause action withheld");
+            }
             dispatch(&reactors, &alert, &alerts_tx, &spawner);
             if alerts_tx.send(alert).await.is_err() {
                 warn!("Alerting service gone; alert tap stopping");
@@ -348,6 +379,45 @@ mod tests {
         // The forwarded original still holds its slot.
         let original = got.iter().find(|a| a.message == "L1").unwrap();
         assert!(original.slot_hold.is_some());
+    }
+
+    /// A rule in shadow: its L1 is forwarded as `alert` (with the would-be action) and no
+    /// reactor sees an L1; the same L1 from a live rule still reaches the reactor.
+    #[tokio::test]
+    async fn tap_withholds_pause_actions_of_shadow_rules() {
+        const SHADOWED: RuleId = RuleId::new(PROGRAM, "shadowed");
+        let tracker = TaskTracker::new();
+        let (rules_tx, rules_rx) = mpsc::channel(8);
+        let (alerts_tx, mut alerts_rx) = mpsc::channel(8);
+        spawn_alert_tap_with_shadow(
+            vec![BuiltReactor::new(Echo, None)],
+            ShadowRules::new([(PROGRAM.as_str(), SHADOWED.name)]),
+            rules_rx,
+            alerts_tx,
+            &tracker,
+        );
+        let mut shadowed = source_alert("L1", None);
+        shadowed.rule = SHADOWED;
+        shadowed.message = "shadowed".into();
+        rules_tx.send(shadowed).await.unwrap();
+        rules_tx.send(source_alert("L1", None)).await.unwrap();
+        drop(rules_tx);
+        tracker.close();
+        tracker.wait().await;
+
+        let mut got = Vec::new();
+        while let Ok(a) = alerts_rx.try_recv() {
+            got.push(a);
+        }
+        let echoes: Vec<_> = got.iter().filter(|a| a.rule == Echo::ID).collect();
+        assert_eq!(echoes.len(), 1, "only the live L1 reaches the reactor");
+        assert_eq!(echoes[0].message, "echo L1");
+        let sh = got.iter().find(|a| a.rule == SHADOWED).unwrap();
+        assert_eq!(sh.metadata["action"], "alert");
+        assert_eq!(sh.metadata["shadow"], "true");
+        assert_eq!(sh.metadata["would_action"], "L1");
+        let live = got.iter().find(|a| a.rule == SOURCE).unwrap();
+        assert_eq!(live.metadata["action"], "L1");
     }
 
     /// Reactors are configured by name like any rule; unconfigured ones are not validated.
