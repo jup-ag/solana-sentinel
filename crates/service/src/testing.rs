@@ -15,8 +15,8 @@
 //! gRPC slot reader is detached (no stream-stall check). Time is tokio's, so a test with
 //! `#[tokio::test(start_paused = true)]` runs minutes of silence instantly.
 
-use crate::config::map_programs_with_rules;
 use crate::config::rules::{RuleConfig, RulesConfig};
+use crate::config::{map_programs_with_rules, shadow_rules};
 use crate::validate::validate_program_rules;
 use crate::wiring::{build_routes, canary_routes};
 use alerting::canary_watchdog::spawn_canary_watchdog;
@@ -36,7 +36,7 @@ use shipstern::sources::{SourceContext, SourceExitStatus, SourceTrait};
 use shipstern::Runtime;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
-use solana_sentinel::reactor::spawn_alert_tap;
+use solana_sentinel::reactor::spawn_alert_tap_with_shadow;
 use solana_sentinel::{
     BootstrapCtx, BuiltReactor, FeedKind, GrpcSlotReader, Liveness, ProgramSpec, SourceHealth,
     StartCtx, StreamPipeline,
@@ -369,7 +369,13 @@ impl Harness {
             cancel.clone(),
             &tracker,
         );
-        spawn_alert_tap(reactors, rules_rx, alerts_tx, &tracker);
+        spawn_alert_tap_with_shadow(
+            reactors,
+            shadow_rules(&programs_rules),
+            rules_rx,
+            alerts_tx,
+            &tracker,
+        );
         AlertingService::new(alerts_rx, router, gate, cancel.clone())
             .with_flush_interval(options.flush_interval)
             .with_liveness(liveness.clone())

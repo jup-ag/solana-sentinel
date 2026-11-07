@@ -10,6 +10,11 @@ pub struct RuleConfig {
     pub name: String,
     pub sinks: Vec<SinkId>,
     pub cooldown_period_seconds: Option<u64>,
+    /// `true`: the rule runs and alerts as usual, but an `L1` / `L2` it raises is rewritten to
+    /// `alert` (`shadow`, `would_action` added) before reactors see it, so it never pauses.
+    /// `None` (left out) is live, same as `false`.
+    #[serde(default)]
+    pub shadow: Option<bool>,
     /// The rule's typed config table; may be omitted for rules that take none.
     #[serde(default)]
     pub config: Value,
