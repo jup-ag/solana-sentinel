@@ -29,12 +29,12 @@ use solana_rpc_client_api::config::{
 use solana_rpc_client_api::filter::{Memcmp, RpcFilterType};
 use solana_rpc_client_api::response::SlotInfo;
 use solana_signature::Signature;
-use utility::redact::{redact_url, redact_urls};
 use solana_transaction_status_client_types::UiTransactionEncoding;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::str::FromStr;
 use std::time::Duration;
 use tracing::{debug, info, warn};
+use utility::redact::{redact_url, redact_urls};
 use yellowstone_grpc_proto::geyser::subscribe_update::UpdateOneof;
 use yellowstone_grpc_proto::geyser::{SubscribeUpdate, SubscribeUpdateSlot};
 
