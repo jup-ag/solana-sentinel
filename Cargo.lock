@@ -5403,6 +5403,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "bs58",
+ "five8",
  "serde",
  "shipstern-core",
  "solana-account",
