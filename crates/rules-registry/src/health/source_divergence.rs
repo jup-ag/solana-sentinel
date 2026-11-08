@@ -134,7 +134,8 @@ impl SourceDivergence {
             );
             let _ = write!(
                 lines,
-                "\n- {}: {} (up={}, idle {}s, {} slots behind, missing {}/{} = {pct:.1}% over {}s{})",
+                "\n- {}: {} (up={}, idle {}s, {} slots behind, missing {}/{} = {pct:.1}% over \
+                 {}s{})",
                 c.name,
                 names.join(", "),
                 c.up,

@@ -20,7 +20,8 @@ mod tests {
 
     #[test]
     fn same_string_as_bs58() {
-        let mut cases: Vec<Vec<u8>> = vec![vec![0; 64], vec![255; 64], vec![1; 64], vec![], vec![9; 32]];
+        let mut cases: Vec<Vec<u8>> =
+            vec![vec![0; 64], vec![255; 64], vec![1; 64], vec![], vec![9; 32]];
         let mut lead = vec![0u8; 64];
         lead[63] = 7;
         cases.push(lead);
@@ -39,7 +40,11 @@ mod tests {
             cases.push(s);
         }
         for c in &cases {
-            assert_eq!(bytes_to_signature_str(c), bs58::encode(c).into_string(), "{c:?}");
+            assert_eq!(
+                bytes_to_signature_str(c),
+                bs58::encode(c).into_string(),
+                "{c:?}"
+            );
         }
     }
 }

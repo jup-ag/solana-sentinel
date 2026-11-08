@@ -313,7 +313,8 @@ async fn main() -> anyhow::Result<()> {
     let (tx, mut rx) = mpsc::channel(10_000);
     let ctx = SourceContext::new(filters(&args)?, tx);
     println!(
-        "multi_live: children {names:?}, gRPC commitment {} (PubSub confirmed), {} min, grace {}s, tx accounts {}, owners {}",
+        "multi_live: children {names:?}, gRPC commitment {} (PubSub confirmed), {} min, grace \
+         {}s, tx accounts {}, owners {}",
         args.commitment,
         args.minutes,
         args.grace_seconds,
@@ -377,8 +378,8 @@ fn print_health(health: &SourceHealth, started: Instant) {
             }
         };
         println!(
-            "{:>8}: up={} restarts={} idle={}s slot={} lag={} delivered={} first={} ({:.1}% of its own) \
-             expected={} missing={} ({:.2}%) late={} delay p50={:?} p95={:?}",
+            "{:>8}: up={} restarts={} idle={}s slot={} lag={} delivered={} first={} ({:.1}% of \
+             its own) expected={} missing={} ({:.2}%) late={} delay p50={:?} p95={:?}",
             c.name,
             c.up,
             c.restarts,
@@ -474,8 +475,8 @@ async fn report(
             d.sort_unstable();
             let p = |q: usize| d.get(d.len().saturating_sub(1) * q / 100).copied();
             println!(
-                "{name:>8}: delivered {} ({:.2}%), first {} ({:.1}% share), only-here {}, \
-                 never delivered {} | delay behind first p50={}ms p95={}ms max={}ms",
+                "{name:>8}: delivered {} ({:.2}%), first {} ({:.1}% share), only-here {}, never \
+                 delivered {} | delay behind first p50={}ms p95={}ms max={}ms",
                 delivered[i],
                 pct(delivered[i], total),
                 first[i],
