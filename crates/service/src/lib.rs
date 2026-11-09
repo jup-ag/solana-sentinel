@@ -23,7 +23,7 @@ use anyhow::Context;
 use data_source::rpc::build_rpc_client;
 use observability::slot_tracker::SlotTracker;
 use observability::{prometheus, run_observability_stack};
-use solana_sentinel::reactor::spawn_alert_tap;
+use solana_sentinel::reactor::spawn_alert_tap_with_shadow;
 use solana_sentinel::{Liveness, ProgramSpec, ValidatedProgram};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -161,7 +161,8 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
         cancel_token.clone(),
         &tracker,
     );
-    spawn_alert_tap(reactors, rules_rx, alerts_tx, &tracker);
+    let shadow = crate::config::shadow_rules(config.programs_with_rules());
+    spawn_alert_tap_with_shadow(reactors, shadow, rules_rx, alerts_tx, &tracker);
 
     // Start the alerting service and send alerts to the clickhouse and slack sinks
     let alerting_service =
