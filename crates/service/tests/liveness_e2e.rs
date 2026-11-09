@@ -97,6 +97,8 @@ cooldown_period_seconds = 600
 check_interval_seconds = 15
 min_silence_seconds = 60
 min_samples = 30
+# The harness's only pipeline: losing it is losing everything.
+critical_feeds = ["fake:account:*"]
 
 [[rules]]
 program = "health"
@@ -164,8 +166,14 @@ async fn blind_monitor_is_detected_end_to_end() {
         ["fake:rule:watched_only"],
         "one rule's input, not the pipeline"
     );
+    assert_eq!(
+        silent[0].severity,
+        Severity::Warn,
+        "one quiet rule input is a Warn"
+    );
 
-    // 3. The source stalls: the pipeline goes silent; one alert, Critical, action = alert.
+    // 3. The source stalls: the pipeline goes silent; one alert, Critical (a listed feed),
+    //    action = alert.
     h.stall();
     sleep(Duration::from_secs(90)).await;
     let silent = checks(&pager.incidents(), "feed_silent");

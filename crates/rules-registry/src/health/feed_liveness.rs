@@ -1,7 +1,7 @@
 //! In-process rule: the monitor went blind somewhere.
 //!
 //! Every tick (no RPC) it reads the liveness registry the framework fills as pipelines,
-//! rule inputs and poll loops receive data, and raises a Critical `action = alert` for:
+//! rule inputs and poll loops receive data, and raises an `action = alert` for:
 //!
 //! - `stream_stalled`: the gRPC stream delivered no slot for `stream_stall_seconds` (or no
 //!   first slot within `first_slot_grace_seconds`). Every feed is silent with it, so no
@@ -12,6 +12,12 @@
 //!   least `min_silence_seconds`) once `min_samples` gaps were seen. A feed that never showed
 //!   steady traffic has no learned bound and is only checked against a configured one.
 //!   A rule feed whose pipeline is already silent is not alerted again.
+//!
+//! Severity: a stalled stream is Critical (the whole monitor is blind). One feed going quiet is
+//! usually a lull on a low-traffic feed (168 Criticals on the 2026-11-08 live runs, none a real
+//! outage), so it is a Warn, unless the feed matches `critical_feeds` or at least
+//! `critical_silent_feeds` pipeline / poll feeds are blind on the same tick (a broken filter or
+//! a partial outage): then every blind feed of that tick is Critical.
 
 use crate::health::{HealthDeps, DEFAULT_CHECK_INTERVAL, PROGRAM};
 use serde::Deserialize;
@@ -52,6 +58,9 @@ mod defaults {
     pub fn per_rule() -> bool {
         true
     }
+    pub fn critical_silent_feeds() -> usize {
+        3
+    }
 }
 
 /// A fixed silence bound for the feeds matching `feed` (exact id, or a prefix ending in `*`).
@@ -90,6 +99,13 @@ pub struct FeedLivenessConfig {
     /// Feeds never checked (exact id, or a prefix ending in `*`).
     #[serde(default)]
     pub ignore: Vec<String>,
+    /// Feeds whose blindness is always Critical (exact id, or a prefix ending in `*`).
+    #[serde(default)]
+    pub critical_feeds: Vec<String>,
+    /// This many pipeline / poll feeds blind on one tick make every blind feed Critical
+    /// (0 = never by count).
+    #[serde(default = "defaults::critical_silent_feeds")]
+    pub critical_silent_feeds: usize,
 }
 
 fn matches(pattern: &str, id: &FeedId) -> bool {
@@ -106,6 +122,9 @@ pub struct FeedLiveness {
     grpc_slot: GrpcSlotReader,
     pod_id: String,
 }
+
+/// How long a feed has been silent, its bound and where the bound came from.
+type Silence = (Duration, Duration, BoundSource);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BoundSource {
@@ -157,9 +176,13 @@ impl FeedLiveness {
         .map(|b| (b, BoundSource::Learned))
     }
 
-    fn base(&self, check: &str) -> solana_sentinel::domain::alert::AlertBuilder {
+    fn base(
+        &self,
+        check: &str,
+        severity: Severity,
+    ) -> solana_sentinel::domain::alert::AlertBuilder {
         Alert::for_rule(Self::ID)
-            .severity(Severity::Critical)
+            .severity(severity)
             .meta("action", "alert")
             .meta("check", check)
             .meta("node", &self.pod_id)
@@ -193,7 +216,7 @@ impl FeedLiveness {
         };
         warn!(age_s = age.as_secs(), ?last_slot, "gRPC stream stalled");
         Some(
-            self.base("stream_stalled")
+            self.base("stream_stalled", Severity::Critical)
                 .message(message)
                 .meta("slot_age_s", age.as_secs())
                 .meta_opt("last_slot", last_slot)
@@ -209,7 +232,7 @@ impl FeedLiveness {
         }
         let snaps = self.liveness.snapshot(now);
         let mut silent: HashSet<FeedId> = HashSet::new();
-        let mut out = Vec::new();
+        let mut blind: Vec<(&FeedSnapshot, Option<Silence>)> = Vec::new();
         // Pipelines and poll feeds first, so a rule feed knows whether its parent is silent.
         let (rules, feeds): (Vec<_>, Vec<_>) = snaps.iter().partition(|f| f.kind == FeedKind::Rule);
         for feed in feeds.into_iter().chain(rules) {
@@ -234,7 +257,7 @@ impl FeedLiveness {
             {
                 silent.insert(feed.id.clone());
                 verdict(None, true);
-                out.push(self.poll_failing(feed));
+                blind.push((feed, None));
                 continue;
             }
             let bound = self.bound(feed);
@@ -243,16 +266,43 @@ impl FeedLiveness {
             verdict(bound.map(|(b, _)| b), is_silent);
             if let (true, Some((bound, source))) = (is_silent, bound) {
                 silent.insert(feed.id.clone());
-                out.push(self.feed_silent(feed, silent_for, bound, source));
+                blind.push((feed, Some((silent_for, bound, source))));
             }
         }
-        out
+        let wide = self.config.critical_silent_feeds > 0
+            && blind
+                .iter()
+                .filter(|(f, _)| f.kind != FeedKind::Rule)
+                .count()
+                >= self.config.critical_silent_feeds;
+        blind
+            .into_iter()
+            .map(|(feed, silence)| {
+                let severity = if wide
+                    || self
+                        .config
+                        .critical_feeds
+                        .iter()
+                        .any(|p| matches(p, &feed.id))
+                {
+                    Severity::Critical
+                } else {
+                    Severity::Warn
+                };
+                match silence {
+                    None => self.poll_failing(feed, severity),
+                    Some((silent_for, bound, source)) => {
+                        self.feed_silent(feed, silent_for, bound, source, severity)
+                    }
+                }
+            })
+            .collect()
     }
 
-    fn poll_failing(&self, feed: &FeedSnapshot) -> Alert {
+    fn poll_failing(&self, feed: &FeedSnapshot, severity: Severity) -> Alert {
         let error = feed.last_error.as_deref().unwrap_or("unknown error");
         warn!(feed = %feed.id, failures = feed.consecutive_failures, error, "Poll source failing");
-        self.base("poll_failing")
+        self.base("poll_failing", severity)
             .message(format!(
                 "Monitor blind spot: poll feed `{}` failed {} fetches in a row (last error: \
                  {error}); its rules see no data",
@@ -273,6 +323,7 @@ impl FeedLiveness {
         silent_for: Duration,
         bound: Duration,
         source: BoundSource,
+        severity: Severity,
     ) -> Alert {
         warn!(feed = %feed.id, silent_s = silent_for.as_secs(), bound_s = bound.as_secs(), "Feed silent");
         let last = if feed.events == 0 {
@@ -280,7 +331,7 @@ impl FeedLiveness {
         } else {
             format!("last event at slot {}", feed.last_slot)
         };
-        self.base("feed_silent")
+        self.base("feed_silent", severity)
             .message(format!(
                 "Monitor blind spot: feed `{}` received nothing for {}s (bound {}s, {}); {last}",
                 feed.id,
@@ -366,8 +417,8 @@ mod tests {
             .collect()
     }
 
-    /// A busy feed learns its bound; past it the rule alerts once per feed, Critical, with
-    /// action = alert. Its rule feed is silent with it and is not alerted twice.
+    /// A busy feed learns its bound; past it the rule alerts once per feed, Warn (one feed
+    /// alone), with action = alert. Its rule feed is silent with it and is not alerted twice.
     #[tokio::test(start_paused = true)]
     async fn busy_feed_going_silent_alerts() {
         let (rule, liveness) = make("min_silence_seconds = 60\nmin_samples = 30");
@@ -394,7 +445,7 @@ mod tests {
             [("feed_silent".to_string(), "lend:account:vault".to_string())]
         );
         let alert = &alerts[0];
-        assert_eq!(alert.severity, Severity::Critical);
+        assert_eq!(alert.severity, Severity::Warn);
         assert_eq!(alert.metadata["action"], "alert");
         assert_eq!(alert.metadata["bound_source"], "learned");
         assert_eq!(alert.metadata["bound_s"], "60");
@@ -458,6 +509,69 @@ mod tests {
         );
         assert_eq!(alerts[0].metadata["bound_source"], "configured");
         assert!(alerts[0].message.contains("nothing received since startup"));
+    }
+
+    /// One quiet feed is a Warn; a feed listed in `critical_feeds` is Critical alone; enough
+    /// pipeline feeds blind on one tick (a partial outage) make every blind feed Critical.
+    #[tokio::test(start_paused = true)]
+    async fn severity_one_feed_warn_many_or_listed_critical() {
+        let toml = r#"
+            critical_silent_feeds = 3
+            critical_feeds = ["lend:account:oracle"]
+            [[bounds]]
+            feed = "lend:*"
+            max_silence_seconds = 60
+            "#;
+        let severities = |alerts: &[Alert]| {
+            let mut v: Vec<(String, Severity)> = alerts
+                .iter()
+                .map(|a| (a.metadata["feed"].clone(), a.severity))
+                .collect();
+            v.sort_by(|a, b| a.0.cmp(&b.0));
+            v
+        };
+
+        let (rule, liveness) = make(toml);
+        liveness.feed("lend", FeedKind::Instruction, "admin", None);
+        let input = liveness.feed("lend", FeedKind::Rule, "solvency", None);
+        input.record_event(1);
+        tokio::time::advance(Duration::from_secs(61)).await;
+        assert_eq!(
+            severities(&rule.check(Instant::now())),
+            [
+                ("lend:instruction:admin".to_string(), Severity::Warn),
+                ("lend:rule:solvency".to_string(), Severity::Warn),
+            ],
+            "one pipeline feed and a rule feed: no outage"
+        );
+
+        let (rule, liveness) = make(toml);
+        liveness.feed("lend", FeedKind::Account, "oracle", None);
+        tokio::time::advance(Duration::from_secs(61)).await;
+        assert_eq!(
+            severities(&rule.check(Instant::now())),
+            [("lend:account:oracle".to_string(), Severity::Critical)]
+        );
+
+        let (rule, liveness) = make(toml);
+        for name in ["a", "b", "c"] {
+            liveness.feed("lend", FeedKind::Transaction, name, None);
+        }
+        tokio::time::advance(Duration::from_secs(61)).await;
+        let alerts = rule.check(Instant::now());
+        assert_eq!(alerts.len(), 3);
+        assert!(alerts.iter().all(|a| a.severity == Severity::Critical));
+
+        let (rule, liveness) =
+            make(&toml.replace("critical_silent_feeds = 3", "critical_silent_feeds = 0"));
+        for name in ["a", "b", "c"] {
+            liveness.feed("lend", FeedKind::Transaction, name, None);
+        }
+        tokio::time::advance(Duration::from_secs(61)).await;
+        assert!(rule
+            .check(Instant::now())
+            .iter()
+            .all(|a| a.severity == Severity::Warn));
     }
 
     /// A poll source failing N times in a row alerts with its last error; a success clears it.
