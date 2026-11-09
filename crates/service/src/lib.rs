@@ -3,11 +3,12 @@
 
 pub mod config;
 pub mod consumer;
+#[cfg(feature = "testing")]
+pub mod testing;
 mod utils;
 pub mod validate;
 pub mod wiring;
 
-use crate::config::service::DataSourceConfig;
 use crate::config::SentinelConfig;
 use crate::consumer::ConsumerService;
 use crate::utils::{
@@ -15,13 +16,16 @@ use crate::utils::{
 };
 pub use crate::utils::{setup_crypto_provider, setup_tracing_subscriber};
 use crate::validate::validate_programs;
+use alerting::canary_watchdog::{spawn_canary_watchdog, DEFAULT_WATCHDOG_INTERVAL};
 use alerting::outbox::Outbox;
 use alerting::service::AlertingService;
 use anyhow::Context;
 use data_source::rpc::build_rpc_client;
 use observability::slot_tracker::SlotTracker;
 use observability::{prometheus, run_observability_stack};
-use solana_sentinel::{ProgramSpec, ValidatedProgram};
+use solana_sentinel::reactor::spawn_alert_tap_with_shadow;
+use solana_sentinel::{Liveness, ProgramSpec, ValidatedProgram};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -52,6 +56,7 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
     info!(service = opts.service_name, "Starting service");
 
     let config = Arc::new(SentinelConfig::load()?);
+    config.data_source().validate()?;
     info!("Configuration loaded");
 
     // Typed rule config is checked before anything connects; `check` stops here.
@@ -60,6 +65,7 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
 
     let cancel_token = CancellationToken::new();
     let signalled = listen_for_shutdown_signal(&cancel_token);
+    let completed = Arc::new(AtomicBool::new(false));
     let tracker = TaskTracker::new();
     let rpc = Arc::new(build_rpc_client(
         config.rpc().url.as_str(),
@@ -71,6 +77,13 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
     info!(pod_id = %pod_id, "Pod ID extracted from environment");
 
     let (router, cooldowns) = wiring::build_alerting_router(&config, &programs)?;
+
+    // Feed liveness and canary state: pipelines record into it, the health rules read it,
+    // the alerting service reports canary deliveries, the heartbeat and watchdog check it.
+    let liveness = Liveness::new();
+    liveness
+        .canary()
+        .set_routes(wiring::canary_routes(config.programs_with_rules()));
 
     // Sidecar Redis holds per-pod state (slot checkpoint, local gate);
     let redis_sidecar_conn = connect_to_redis(&config.redis().redis_sidecar_url)
@@ -96,7 +109,7 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
         &pod_id,
         cancel_token.clone(),
         &tracker,
-        matches!(config.data_source(), DataSourceConfig::YellowstoneGrpc(_)),
+        config.data_source().stall_watchdog(),
     )
     .await
     .context("Failed to initialize slot tracker")?;
@@ -106,41 +119,65 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
     let observability = config.observability();
     run_observability_stack(
         &slot_tracker,
+        &liveness,
         observability.server.bind_addr,
         observability.heartbeat(),
         cancel_token.clone(),
         &tracker,
     );
 
-    // alerts channel to send alerts from the consumer service to the alerting service(clickhouse, slack and betterstack sinks)
+    // Rules send to `rules_tx`; the alert tap hands each alert to the reactors, then forwards it
+    // to the alerting service (cooldown / fleet gates, sinks) on `alerts_tx`.
+    let (rules_tx, rules_rx) = mpsc::channel(1024);
     let (alerts_tx, alerts_rx) = mpsc::channel(1024);
 
     // start the consumer service which starts processing messages from grpc + bootstraps any cached state from the rpc
     let consumer_service = ConsumerService::new(
         &config,
         programs,
-        alerts_tx.clone(),
+        // Kept here too, so the channel stays open for the whole run as before.
+        rules_tx.clone(),
         cancel_token.clone(),
         Arc::clone(&rpc),
         slot_tracker.clone(),
         pod_id.clone(),
-    );
+        liveness.clone(),
+    )
+    .with_completion_flag(Arc::clone(&completed));
     // Bootstrap can take minutes of RPC; a shutdown during it skips straight to the drain.
-    tokio::select! {
+    let reactors = tokio::select! {
         started = consumer_service.start(&tracker) => started.context("Failed to start consumer")?,
-        () = cancel_token.cancelled() => warn!("Shutdown requested during startup"),
-    }
+        () = cancel_token.cancelled() => {
+            warn!("Shutdown requested during startup");
+            Vec::new()
+        }
+    };
+    // Past the tap, so a stuck tap or reactor cannot hide a missed canary.
+    spawn_canary_watchdog(
+        liveness.clone(),
+        alerts_tx.clone(),
+        pod_id.clone(),
+        DEFAULT_WATCHDOG_INTERVAL,
+        cancel_token.clone(),
+        &tracker,
+    );
+    let shadow = crate::config::shadow_rules(config.programs_with_rules());
+    spawn_alert_tap_with_shadow(reactors, shadow, rules_rx, alerts_tx, &tracker);
 
     // Start the alerting service and send alerts to the clickhouse and slack sinks
     let alerting_service =
         AlertingService::new(alerts_rx, router, cooldown_gate, cancel_token.clone())
-            .with_outbox(outbox);
+            .with_outbox(outbox)
+            .with_liveness(liveness);
     alerting_service.start(&tracker);
 
     // Wait for shutdown signal (Ctrl+C, SIGTERM) or cancellation token to be triggered
-    let reason = wait_for_shutdown(&cancel_token, &signalled).await;
+    let reason = wait_for_shutdown(&cancel_token, &signalled, &completed).await;
 
     cancel_token.cancel();
+    // The alert tap runs until every rule sender is gone; this one would keep it (and so
+    // `tracker.wait()`) alive forever once the pipelines have stopped.
+    drop(rules_tx);
     tracker.close();
     tracker.wait().await;
 

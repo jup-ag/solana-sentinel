@@ -8,7 +8,9 @@
 //! in PromQL via `rate()` rather than stored.
 
 use crate::prometheus::registry::REGISTRY;
-use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts};
+use prometheus::{
+    GaugeVec, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Opts,
+};
 use std::fmt::Display;
 use std::sync::LazyLock;
 
@@ -108,6 +110,320 @@ static TRACKED_SLOT: LazyLock<IntGaugeVec> = LazyLock::new(|| {
         .expect("register tracked_slot");
     m
 });
+fn counter_vec(name: &str, help: &str, labels: &[&str]) -> IntCounterVec {
+    let m = IntCounterVec::new(Opts::new(name, help).namespace(namespace()), labels)
+        .unwrap_or_else(|e| panic!("invalid {name} metric: {e}"));
+    REGISTRY
+        .register(Box::new(m.clone()))
+        .unwrap_or_else(|e| panic!("register {name}: {e}"));
+    m
+}
+
+fn int_gauge_vec(name: &str, help: &str, labels: &[&str]) -> IntGaugeVec {
+    let m = IntGaugeVec::new(Opts::new(name, help).namespace(namespace()), labels)
+        .unwrap_or_else(|e| panic!("invalid {name} metric: {e}"));
+    REGISTRY
+        .register(Box::new(m.clone()))
+        .unwrap_or_else(|e| panic!("register {name}: {e}"));
+    m
+}
+
+fn gauge_vec(name: &str, help: &str, labels: &[&str]) -> GaugeVec {
+    let m = GaugeVec::new(Opts::new(name, help).namespace(namespace()), labels)
+        .unwrap_or_else(|e| panic!("invalid {name} metric: {e}"));
+    REGISTRY
+        .register(Box::new(m.clone()))
+        .unwrap_or_else(|e| panic!("register {name}: {e}"));
+    m
+}
+
+// ---- liveness: is every feed still receiving data, do alerts still reach the sinks ----
+
+const FEED_LABELS: &[&str] = &["program", "kind", "feed"];
+
+/// Events received per feed (pipeline, rule input, poll bucket).
+static FEED_EVENTS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    counter_vec(
+        "feed_events_total",
+        "Events received per feed (pipeline, rule input, poll tick)",
+        FEED_LABELS,
+    )
+});
+
+/// Seconds since the feed's last event (since registration when it never had one).
+static FEED_LAST_EVENT_AGE_SECONDS: LazyLock<GaugeVec> = LazyLock::new(|| {
+    gauge_vec(
+        "feed_last_event_age_seconds",
+        "Seconds since the feed's last event, refreshed on every liveness check",
+        FEED_LABELS,
+    )
+});
+
+/// The silence bound the liveness rule applies to the feed (learned or configured).
+static FEED_SILENCE_BOUND_SECONDS: LazyLock<GaugeVec> = LazyLock::new(|| {
+    gauge_vec(
+        "feed_silence_bound_seconds",
+        "Silence the liveness rule tolerates on the feed before alerting; absent until learned",
+        FEED_LABELS,
+    )
+});
+
+/// 1 while the liveness rule considers the feed silent or failing.
+static FEED_SILENT: LazyLock<IntGaugeVec> = LazyLock::new(|| {
+    int_gauge_vec(
+        "feed_silent",
+        "1 while the feed is silent past its bound or its poll source keeps failing",
+        FEED_LABELS,
+    )
+});
+
+/// Failed poll ticks per poll feed.
+static FEED_POLL_FAILURES_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    counter_vec(
+        "feed_poll_failures_total",
+        "Failed fetches per poll feed",
+        FEED_LABELS,
+    )
+});
+
+/// Failed poll ticks in a row per poll feed; 0 after a success.
+static FEED_POLL_CONSECUTIVE_FAILURES: LazyLock<IntGaugeVec> = LazyLock::new(|| {
+    int_gauge_vec(
+        "feed_poll_consecutive_failures",
+        "Failed fetches in a row per poll feed",
+        FEED_LABELS,
+    )
+});
+
+/// Seconds since the gRPC stream delivered a slot.
+static STREAM_SLOT_AGE_SECONDS: LazyLock<GaugeVec> = LazyLock::new(|| {
+    gauge_vec(
+        "stream_slot_age_seconds",
+        "Seconds since the stream delivered a slot",
+        &["source"],
+    )
+});
+
+static CANARY_SENT_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    counter_vec(
+        "canary_sent_total",
+        "Canary alerts emitted, per route",
+        &["route"],
+    )
+});
+
+static CANARY_DELIVERED_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    counter_vec(
+        "canary_delivered_total",
+        "Canary alerts a sink accepted, per route and sink",
+        &["route", "sink"],
+    )
+});
+
+/// Canary emit → sink accepted, in seconds.
+static CANARY_LATENCY_SECONDS: LazyLock<HistogramVec> = LazyLock::new(|| {
+    let m = HistogramVec::new(
+        HistogramOpts::new(
+            "canary_latency_seconds",
+            "Seconds from canary emission to a sink accepting it",
+        )
+        .namespace(namespace())
+        .buckets(vec![
+            0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0,
+        ]),
+        &["sink"],
+    )
+    .expect("invalid canary_latency_seconds metric");
+    REGISTRY
+        .register(Box::new(m.clone()))
+        .expect("register canary_latency_seconds");
+    m
+});
+
+/// Age of the freshest canary a sink accepted, per route and sink.
+static CANARY_DELIVERY_AGE_SECONDS: LazyLock<GaugeVec> = LazyLock::new(|| {
+    gauge_vec(
+        "canary_delivery_age_seconds",
+        "Seconds since the freshest delivered canary was emitted, per route and sink",
+        &["route", "sink"],
+    )
+});
+
+/// 1 while a route/sink pair has no fresh canary.
+static CANARY_MISSED: LazyLock<IntGaugeVec> = LazyLock::new(|| {
+    int_gauge_vec(
+        "canary_missed",
+        "1 while no fresh canary reached the sink on this route",
+        &["route", "sink"],
+    )
+});
+
+/// Betterstack heartbeats withheld because the alert path is unhealthy.
+static HEARTBEAT_WITHHELD_TOTAL: LazyLock<IntCounter> = LazyLock::new(|| {
+    let m = IntCounter::with_opts(
+        Opts::new(
+            "heartbeat_withheld_total",
+            "Betterstack heartbeats withheld because a canary missed its sink",
+        )
+        .namespace(namespace()),
+    )
+    .expect("invalid heartbeat_withheld_total metric");
+    REGISTRY
+        .register(Box::new(m.clone()))
+        .expect("register heartbeat_withheld_total");
+    m
+});
+
+/// Per-feed metric handles, resolved once at registration so the hot path is one atomic add.
+#[derive(Debug, Clone)]
+pub struct FeedMetrics {
+    pub events: IntCounter,
+    pub age: prometheus::Gauge,
+    pub bound: prometheus::Gauge,
+    pub silent: IntGauge,
+    pub poll_failures: IntCounter,
+    pub poll_consecutive_failures: IntGauge,
+}
+
+impl FeedMetrics {
+    pub fn new(program: &str, kind: &str, feed: &str) -> Self {
+        let labels = [program, kind, feed];
+        Self {
+            events: FEED_EVENTS_TOTAL.with_label_values(&labels),
+            age: FEED_LAST_EVENT_AGE_SECONDS.with_label_values(&labels),
+            bound: FEED_SILENCE_BOUND_SECONDS.with_label_values(&labels),
+            silent: FEED_SILENT.with_label_values(&labels),
+            poll_failures: FEED_POLL_FAILURES_TOTAL.with_label_values(&labels),
+            poll_consecutive_failures: FEED_POLL_CONSECUTIVE_FAILURES.with_label_values(&labels),
+        }
+    }
+}
+
+pub fn record_stream_slot_age(source: &str, age_secs: f64) {
+    STREAM_SLOT_AGE_SECONDS
+        .with_label_values(&[source])
+        .set(age_secs);
+}
+
+pub fn record_canary_sent(route: &str) {
+    CANARY_SENT_TOTAL.with_label_values(&[route]).inc();
+}
+
+pub fn record_canary_delivered(route: &str, sink: &str, latency_secs: f64) {
+    CANARY_DELIVERED_TOTAL
+        .with_label_values(&[route, sink])
+        .inc();
+    CANARY_LATENCY_SECONDS
+        .with_label_values(&[sink])
+        .observe(latency_secs);
+}
+
+pub fn record_canary_state(route: &str, sink: &str, age_secs: Option<f64>, missed: bool) {
+    if let Some(age) = age_secs {
+        CANARY_DELIVERY_AGE_SECONDS
+            .with_label_values(&[route, sink])
+            .set(age);
+    }
+    CANARY_MISSED
+        .with_label_values(&[route, sink])
+        .set(i64::from(missed));
+}
+
+pub fn record_heartbeat_withheld() {
+    HEARTBEAT_WITHHELD_TOTAL.inc();
+}
+/// Delay buckets (seconds) for a child source delivering an item after the first child.
+const SOURCE_DELAY_BUCKETS: &[f64] = &[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0];
+
+/// Multi-source children: 1 while the child's stream is connected.
+static DATA_SOURCE_UP: LazyLock<IntGaugeVec> = LazyLock::new(|| {
+    let m = IntGaugeVec::new(
+        Opts::new(
+            "data_source_up",
+            "Multi-source child connected (1) or not (0)",
+        )
+        .namespace(namespace()),
+        &["source"],
+    )
+    .expect("invalid data_source_up metric");
+    REGISTRY
+        .register(Box::new(m.clone()))
+        .expect("register data_source_up");
+    m
+});
+
+/// Multi-source children: highest slot delivered and slots behind the most advanced child.
+static DATA_SOURCE_SLOT: LazyLock<IntGaugeVec> = LazyLock::new(|| {
+    let m = IntGaugeVec::new(
+        Opts::new(
+            "data_source_slot",
+            "Multi-source child: highest slot delivered (kind=slot) and lag behind the most \
+             advanced child (kind=lag)",
+        )
+        .namespace(namespace()),
+        &["source", "kind"],
+    )
+    .expect("invalid data_source_slot metric");
+    REGISTRY
+        .register(Box::new(m.clone()))
+        .expect("register data_source_slot");
+    m
+});
+
+/// Multi-source children: item counters (delivered, first, expected, missing, late).
+static DATA_SOURCE_ITEMS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    let m = IntCounterVec::new(
+        Opts::new(
+            "data_source_items_total",
+            "Multi-source child items: delivered, first (before any other child), expected \
+             (another child delivered it), missing (expected, not delivered within the grace \
+             window), late (delivered after it)",
+        )
+        .namespace(namespace()),
+        &["source", "kind"],
+    )
+    .expect("invalid data_source_items_total metric");
+    REGISTRY
+        .register(Box::new(m.clone()))
+        .expect("register data_source_items_total");
+    m
+});
+
+/// Multi-source children: restarts after the child's stream ended or failed.
+static DATA_SOURCE_RESTARTS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    let m = IntCounterVec::new(
+        Opts::new(
+            "data_source_restarts_total",
+            "Multi-source child restarts after its stream ended or failed",
+        )
+        .namespace(namespace()),
+        &["source"],
+    )
+    .expect("invalid data_source_restarts_total metric");
+    REGISTRY
+        .register(Box::new(m.clone()))
+        .expect("register data_source_restarts_total");
+    m
+});
+
+/// Multi-source children: how long after the first child this child delivered an item.
+static DATA_SOURCE_DELAY_SECONDS: LazyLock<HistogramVec> = LazyLock::new(|| {
+    let m = HistogramVec::new(
+        HistogramOpts::new(
+            "data_source_delay_seconds",
+            "Multi-source child: delay behind the first child delivering the same item",
+        )
+        .namespace(namespace())
+        .buckets(SOURCE_DELAY_BUCKETS.to_vec()),
+        &["source"],
+    )
+    .expect("invalid data_source_delay_seconds metric");
+    REGISTRY
+        .register(Box::new(m.clone()))
+        .expect("register data_source_delay_seconds");
+    m
+});
+
 /// Force initialization of all metrics so they appear in scrapes before their
 /// first use. Call once at startup with the deployment's metric prefix;
 /// otherwise a metric stays absent until the first time its static is touched.
@@ -119,6 +435,24 @@ pub fn init(namespace: &str) {
     LazyLock::force(&RPC_FETCH_STATUS_TOTAL);
     LazyLock::force(&RPC_LATENCY_SECONDS);
     LazyLock::force(&TRACKED_SLOT);
+    LazyLock::force(&FEED_EVENTS_TOTAL);
+    LazyLock::force(&FEED_LAST_EVENT_AGE_SECONDS);
+    LazyLock::force(&FEED_SILENCE_BOUND_SECONDS);
+    LazyLock::force(&FEED_SILENT);
+    LazyLock::force(&FEED_POLL_FAILURES_TOTAL);
+    LazyLock::force(&FEED_POLL_CONSECUTIVE_FAILURES);
+    LazyLock::force(&STREAM_SLOT_AGE_SECONDS);
+    LazyLock::force(&CANARY_SENT_TOTAL);
+    LazyLock::force(&CANARY_DELIVERED_TOTAL);
+    LazyLock::force(&CANARY_LATENCY_SECONDS);
+    LazyLock::force(&CANARY_DELIVERY_AGE_SECONDS);
+    LazyLock::force(&CANARY_MISSED);
+    LazyLock::force(&HEARTBEAT_WITHHELD_TOTAL);
+    LazyLock::force(&DATA_SOURCE_UP);
+    LazyLock::force(&DATA_SOURCE_SLOT);
+    LazyLock::force(&DATA_SOURCE_ITEMS_TOTAL);
+    LazyLock::force(&DATA_SOURCE_RESTARTS_TOTAL);
+    LazyLock::force(&DATA_SOURCE_DELAY_SECONDS);
 }
 
 /// Increment the alert counter for a given severity
@@ -209,4 +543,59 @@ pub fn record_tracked_slot(rpc_slot: u64, grpc_slot: u64) {
     TRACKED_SLOT
         .with_label_values(&[&SlotSource::Grpc.to_string()])
         .set(grpc_slot as i64);
+}
+
+/// Multi-source item counter kinds; see `data_source_items_total`.
+#[derive(Debug, Clone, Copy)]
+pub enum SourceCount {
+    Delivered,
+    First,
+    Expected,
+    Missing,
+    Late,
+}
+
+impl SourceCount {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Delivered => "delivered",
+            Self::First => "first",
+            Self::Expected => "expected",
+            Self::Missing => "missing",
+            Self::Late => "late",
+        }
+    }
+}
+
+pub fn record_source_up(source: &str, up: bool) {
+    DATA_SOURCE_UP
+        .with_label_values(&[source])
+        .set(i64::from(up));
+}
+
+pub fn record_source_slot(source: &str, slot: u64, lag: u64) {
+    DATA_SOURCE_SLOT
+        .with_label_values(&[source, "slot"])
+        .set(i64::try_from(slot).unwrap_or(i64::MAX));
+    DATA_SOURCE_SLOT
+        .with_label_values(&[source, "lag"])
+        .set(i64::try_from(lag).unwrap_or(i64::MAX));
+}
+
+pub fn record_source_count(source: &str, kind: SourceCount, n: u64) {
+    DATA_SOURCE_ITEMS_TOTAL
+        .with_label_values(&[source, kind.label()])
+        .inc_by(n);
+}
+
+pub fn record_source_restart(source: &str) {
+    DATA_SOURCE_RESTARTS_TOTAL
+        .with_label_values(&[source])
+        .inc();
+}
+
+pub fn record_source_delay(source: &str, seconds: f64) {
+    DATA_SOURCE_DELAY_SECONDS
+        .with_label_values(&[source])
+        .observe(seconds);
 }

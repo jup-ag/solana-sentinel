@@ -22,7 +22,7 @@ const SLOT_CHECKPOINT_MAX_DIFF_THRESHOLD: u64 = 11_000; //  ~70 minutes at 400ms
 const SLOT_CHECKPOINT_KEY_REDIS: &str = "slot_checkpoint:last_seen_slot"; // Redis key to store the last seen slot checkpoint.
                                                                           // No slot for this long means a hung stream (no keepalive covers it); stop so the pod restarts.
                                                                           // Longer than a few client reconnect backoffs, which recover in place.
-const STREAM_STALL_TIMEOUT: Duration = Duration::from_secs(120);
+pub const STREAM_STALL_TIMEOUT: Duration = Duration::from_secs(120);
 // Bootstrap runs before the stream starts, so the first slot gets a longer budget.
 const FIRST_SLOT_TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -57,6 +57,8 @@ impl FirstGrpcSlotSeenGuard {
 pub struct GrpcSlotReader {
     last_seen: LastSeenGrpcSlot,
     first_seen: FirstGrpcSlotSeenGuard,
+    /// When the stream last delivered a slot (tracker init until the first); `None` detached.
+    last_slot_at: Option<Arc<Mutex<tokio::time::Instant>>>,
 }
 
 impl GrpcSlotReader {
@@ -65,12 +67,49 @@ impl GrpcSlotReader {
         Self {
             last_seen: LastSeenGrpcSlot::live(),
             first_seen: FirstGrpcSlotSeenGuard::new(),
+            last_slot_at: None,
         }
+    }
+
+    /// A reader driven by hand, for tests of rules that watch the stream: `record` stands in
+    /// for the stream delivering a slot.
+    pub fn manual() -> (Self, ManualSlotFeed) {
+        let reader = Self {
+            last_seen: LastSeenGrpcSlot::live(),
+            first_seen: FirstGrpcSlotSeenGuard::new(),
+            last_slot_at: Some(Arc::new(Mutex::new(tokio::time::Instant::now()))),
+        };
+        (reader.clone(), ManualSlotFeed(reader))
+    }
+
+    /// Time since the stream last delivered a slot (since startup before the first one);
+    /// `None` when no stream is behind this reader.
+    pub fn last_slot_age(&self) -> Option<Duration> {
+        self.last_slot_at.as_ref().map(|at| at.lock().elapsed())
+    }
+
+    /// Whether the stream has delivered its first slot.
+    pub fn first_slot_seen(&self) -> bool {
+        self.first_seen.is_seen()
     }
 
     /// Last gRPC slot, or `None` until the stream has delivered its first slot.
     pub fn load(&self) -> Option<u64> {
         self.first_seen.is_seen().then(|| self.last_seen.load())
+    }
+}
+
+/// Feeds a [`GrpcSlotReader::manual`] reader, as the stream would.
+#[derive(Debug, Clone)]
+pub struct ManualSlotFeed(GrpcSlotReader);
+
+impl ManualSlotFeed {
+    pub fn record(&self, slot: u64) {
+        self.0.last_seen.store(slot);
+        self.0.first_seen.mark();
+        if let Some(at) = &self.0.last_slot_at {
+            *at.lock() = tokio::time::Instant::now();
+        }
     }
 }
 
@@ -81,7 +120,7 @@ pub struct SlotTracker {
     cancel_token: CancellationToken,
     first_grpc_slot_seen: FirstGrpcSlotSeenGuard,
     /// When the stream last delivered a slot (init time until the first one).
-    last_slot_at: Arc<Mutex<Instant>>,
+    last_slot_at: Arc<Mutex<tokio::time::Instant>>,
     /// Only for sources that stream every slot; Kafka synthesizes slots from records.
     stall_watchdog: bool,
 }
@@ -107,7 +146,7 @@ impl SlotTracker {
             slot_checkpoint,
             cancel_token,
             first_grpc_slot_seen: FirstGrpcSlotSeenGuard::new(),
-            last_slot_at: Arc::new(Mutex::new(Instant::now())),
+            last_slot_at: Arc::new(Mutex::new(tokio::time::Instant::now())),
             stall_watchdog,
         };
         slot_tracker.spawn_checkpoint_recorder(tracker);
@@ -122,12 +161,13 @@ impl SlotTracker {
         GrpcSlotReader {
             last_seen: self.last_seen_grpc_slot.clone(),
             first_seen: self.first_grpc_slot_seen.clone(),
+            last_slot_at: Some(Arc::clone(&self.last_slot_at)),
         }
     }
 
     fn store_last_seen_grpc_slot(&self, slot: u64) {
         self.last_seen_grpc_slot.store(slot);
-        *self.last_slot_at.lock() = Instant::now();
+        *self.last_slot_at.lock() = tokio::time::Instant::now();
     }
 
     /// The checkpoint the stream started from could not be replayed; forget it so the

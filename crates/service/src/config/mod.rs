@@ -60,8 +60,18 @@ impl SentinelConfig {
     }
 }
 
+/// The rules whose `[[rules]]` block says `shadow = true`.
+pub fn shadow_rules(programs: &[ProgramRules]) -> solana_sentinel::ShadowRules {
+    solana_sentinel::ShadowRules::new(programs.iter().flat_map(|p| {
+        p.rules
+            .iter()
+            .filter(|r| r.shadow == Some(true))
+            .map(|r| (p.program.clone(), r.name.clone()))
+    }))
+}
+
 /// Group rules by program, keeping the order programs first appear in the rules files.
-fn map_programs_with_rules(rules: Vec<RuleConfig>) -> Vec<ProgramRules> {
+pub fn map_programs_with_rules(rules: Vec<RuleConfig>) -> Vec<ProgramRules> {
     let mut out: Vec<ProgramRules> = Vec::new();
     for r in rules {
         match out.iter_mut().find(|p| p.program == r.program) {

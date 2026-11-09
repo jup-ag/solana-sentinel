@@ -6,9 +6,11 @@
 use crate::handler::forward_alert;
 use crate::rule::PollCtx;
 use crate::rule_set::PollBucket;
+use crate::BootstrapCtx;
 use async_trait::async_trait;
 use domain::alert::Alert;
 use domain::programs::Program;
+use observability::liveness::FeedKind;
 use solana_account::Account;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
@@ -43,11 +45,47 @@ pub trait PollSource: Send + Sync + 'static {
     }
 }
 
+/// A clock tick and nothing else: for poll rules that read in-process state (feed liveness,
+/// canaries) and must keep running when the RPC is down. Makes no RPC call.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TickSource;
+
+/// What a [`TickSource`] hands its rules each tick.
+#[derive(Debug, Clone, Copy)]
+pub struct Tick;
+
+#[async_trait]
+impl PollSource for TickSource {
+    type Item = Tick;
+
+    async fn poll(
+        &self,
+        _rpc: &RpcClient,
+        _accounts: &[Pubkey],
+    ) -> anyhow::Result<(Vec<Tick>, PollCtx)> {
+        Ok((
+            vec![Tick],
+            PollCtx {
+                slot: 0,
+                fetched_at: Instant::now(),
+            },
+        ))
+    }
+}
+
+/// `MySource` for `my_crate::poll::MySource`; names a poll feed.
+fn source_name<S>() -> &'static str {
+    std::any::type_name::<S>()
+        .rsplit("::")
+        .next()
+        .unwrap_or("poll")
+}
+
 pub fn spawn_poll_loop<S: PollSource>(
     program: Program,
     source: Arc<S>,
     bucket: PollBucket<S::Item>,
-    rpc: Arc<RpcClient>,
+    bootstrap: &BootstrapCtx,
     alerts_tx: mpsc::Sender<Alert>,
     cancel_token: CancellationToken,
     tracker: &TaskTracker,
@@ -57,6 +95,21 @@ pub fn spawn_poll_loop<S: PollSource>(
         accounts,
         rules,
     } = bucket;
+    let rpc = Arc::clone(&bootstrap.rpc);
+    let feed = bootstrap.liveness.feed(
+        program.as_str(),
+        FeedKind::Poll,
+        &format!("{}:{}s", source_name::<S>(), interval.as_secs()),
+        None,
+    );
+    let rule_feeds: Vec<_> = rules
+        .iter()
+        .map(|r| {
+            bootstrap
+                .liveness
+                .feed(program.as_str(), FeedKind::Rule, r.id.name, Some(&feed))
+        })
+        .collect();
     info!(
         program = %program,
         poll_interval_secs = interval.as_secs(),
@@ -80,13 +133,19 @@ pub fn spawn_poll_loop<S: PollSource>(
                     let (items, ctx) = match source.poll(&rpc, &accounts).await {
                         Ok(polled) => polled,
                         Err(e) => {
-                            error!(program = %program, error = format!("{e:#}"), "Poll fetch failed");
+                            let error = format!("{e:#}");
+                            error!(program = %program, error, "Poll fetch failed");
+                            feed.record_failure(&error);
                             continue;
                         }
                     };
+                    feed.record_event(ctx.slot);
+                    for rule_feed in &rule_feeds {
+                        rule_feed.record_event(ctx.slot);
+                    }
                     for item in items {
                         for rule in &rules {
-                            if let Some(alert) = (rule.evaluate)(&item, &ctx) {
+                            for alert in (rule.evaluate)(&item, &ctx) {
                                 forward_alert(alert, Some(ctx.slot), None, &alerts_tx).await;
                             }
                         }

@@ -5,6 +5,7 @@ use crate::sinks::Delivery;
 use chrono::Utc;
 use domain::alert::Alert;
 use domain::sinks::SinkId;
+use observability::liveness::Liveness;
 use observability::prometheus::metrics::record_alert;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -27,6 +28,8 @@ const MAX_DELIVERY_ATTEMPTS: u32 = 3;
 const PARK_BASE: Duration = Duration::from_secs(60);
 const PARK_MAX: Duration = Duration::from_secs(15 * 60);
 const DEFAULT_MAX_ALERT_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+// A canary is a probe of now: one that could not be delivered in this long is stale, not owed.
+const CANARY_MAX_AGE: Duration = Duration::from_secs(15 * 60);
 
 pub struct AlertingService {
     router: Router,
@@ -37,6 +40,7 @@ pub struct AlertingService {
     buffer_capacity: usize,
     flush_interval: Duration,
     max_alert_age: Duration,
+    liveness: Option<Liveness>,
 }
 
 impl AlertingService {
@@ -55,7 +59,15 @@ impl AlertingService {
             buffer_capacity: DEFAULT_BUFFER_CAPACITY,
             flush_interval: DEFAULT_FLUSH_INTERVAL,
             max_alert_age: DEFAULT_MAX_ALERT_AGE,
+            liveness: None,
         }
+    }
+
+    /// Route canaries by their armed route and report each sink's acceptance to the tracker.
+    /// Without it canaries are dropped at admission.
+    pub fn with_liveness(mut self, liveness: Liveness) -> Self {
+        self.liveness = Some(liveness);
+        self
     }
 
     /// Alerts held in memory; beyond it, persisted alerts wait in the outbox instead.
@@ -91,6 +103,7 @@ impl AlertingService {
             buffer_capacity,
             flush_interval,
             max_alert_age,
+            liveness,
         } = self;
 
         tracker.spawn(async move {
@@ -125,6 +138,7 @@ impl AlertingService {
                 max_alert_age,
                 adopted: false,
                 parked_here: HashSet::new(),
+                liveness,
             };
             tokio::select! {
                 () = d.run(alerts_rx, &cancel_token, flush_interval) => {}
@@ -161,6 +175,7 @@ struct Dispatcher {
     adopted: bool,
     /// Parked by this run, so already claimed; anything else from the outbox is re-gated.
     parked_here: HashSet<Uuid>,
+    liveness: Option<Liveness>,
 }
 
 impl Dispatcher {
@@ -271,9 +286,13 @@ impl Dispatcher {
 
     /// Persist the alert, gate it, and queue it for every sink its rule routes to.
     async fn admit(&mut self, alert: Alert) {
-        let sinks = self.router.route(alert.rule).to_vec();
+        let sinks = self.sinks_for(&alert);
         if sinks.is_empty() {
-            warn!(rule = alert.rule.name, "Alert dropped: no matching route");
+            warn!(
+                rule = alert.rule.name,
+                canary = alert.is_canary(),
+                "Alert dropped: no matching route"
+            );
             return;
         }
         let mut pending = Pending {
@@ -292,12 +311,26 @@ impl Dispatcher {
             }
             return;
         }
-        record_alert(pending.alert.severity);
+        if !pending.alert.is_canary() {
+            record_alert(pending.alert.severity);
+        }
         // Memory is full: a persisted alert waits in the outbox and is loaded when there's room.
         if self.buffer.len() >= self.buffer_capacity && self.park(&pending, Duration::ZERO).await {
             return;
         }
         self.buffer.push(pending);
+    }
+
+    /// A canary goes to the sinks of the route it exercises, anything else to its rule's.
+    fn sinks_for(&self, alert: &Alert) -> Vec<SinkId> {
+        if !alert.is_canary() {
+            return self.router.route(alert.rule).to_vec();
+        }
+        alert
+            .canary_route()
+            .zip(self.liveness.as_ref())
+            .and_then(|(route, liveness)| liveness.canary().route_sinks(route))
+            .unwrap_or_default()
     }
 
     /// One delivery attempt for every resident alert that is due. Failed ones are retried,
@@ -356,6 +389,13 @@ impl Dispatcher {
                 match outcome {
                     Delivery::Delivered => {
                         let pending = &mut self.buffer[i];
+                        if let (Some(seq), Some(liveness)) =
+                            (pending.alert.canary_seq(), &self.liveness)
+                        {
+                            liveness
+                                .canary()
+                                .delivered(seq, &sink_id, tokio::time::Instant::now());
+                        }
                         pending.delivered = true;
                         pending.sinks.retain(|s| s != &sink_id);
                         changed[i] = true;
@@ -376,7 +416,12 @@ impl Dispatcher {
             let age = (Utc::now() - pending.alert.fired_at)
                 .to_std()
                 .unwrap_or_default();
-            if age >= self.max_alert_age {
+            let max_age = if pending.alert.is_canary() {
+                self.max_alert_age.min(CANARY_MAX_AGE)
+            } else {
+                self.max_alert_age
+            };
+            if age >= max_age {
                 error!(
                     rule = pending.alert.rule.name,
                     sinks = ?pending.sinks,

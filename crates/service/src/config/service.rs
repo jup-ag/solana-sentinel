@@ -52,13 +52,122 @@ impl Default for CooldownGateConfig {
 
 /// Where the stream comes from. Every variant is a shipstern source running in its
 /// runtime: `yellowstone_grpc` (production default), `websocket` (Solana PubSub, for
-/// nodes without Geyser), `kafka` (janus raw topics).
+/// nodes without Geyser), `kafka` (janus raw topics), `multi` (several of those merged
+/// and deduplicated, with per-child lag / divergence tracking), `replay` (a recorded
+/// incident window, for drills; the service stops cleanly once it is played).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DataSourceConfig {
     YellowstoneGrpc(YellowstoneGrpcSourceConfig),
     Websocket(WebsocketSourceConfig),
     Kafka(KafkaSourceConfig),
+    Multi(MultiSourceConfig),
+    Replay(ReplaySourceConfig),
+}
+
+impl DataSourceConfig {
+    /// A source that ends on its own (a replay), after which the service stops with success.
+    pub const fn is_finite(&self) -> bool {
+        matches!(self, Self::Replay(_))
+    }
+
+    /// Whether the stream (or any child of a `multi` stream) is Yellowstone gRPC.
+    pub fn has_yellowstone(&self) -> bool {
+        match self {
+            Self::YellowstoneGrpc(_) => true,
+            Self::Multi(m) => m.sources.iter().any(|c| c.source.has_yellowstone()),
+            Self::Websocket(_) | Self::Kafka(_) | Self::Replay(_) => false,
+        }
+    }
+
+    /// Whether the slot tracker's stall watchdog applies: the source delivers a slot update
+    /// for every slot, so a silence means the stream is stuck. Yellowstone does (and so does a
+    /// `multi` with a Yellowstone child, whose slots are merged); a replay emits every slot of
+    /// its window, so a stuck replay stops the service (exit 1) instead of hanging the drill.
+    /// Kafka synthesizes slots from records and PubSub has no slot feed here.
+    pub fn stall_watchdog(&self) -> bool {
+        match self {
+            Self::YellowstoneGrpc(_) | Self::Replay(_) => true,
+            Self::Multi(_) => self.has_yellowstone(),
+            Self::Websocket(_) | Self::Kafka(_) => false,
+        }
+    }
+
+    /// Structure checks that need no I/O: `multi` children named, unique, not nested;
+    /// a replay's linger shorter than the stall watchdog's budget.
+    pub fn validate(&self) -> Result<()> {
+        if let Self::Replay(r) = self {
+            let stall = observability::slot_tracker::STREAM_STALL_TIMEOUT.as_secs();
+            anyhow::ensure!(
+                r.replay.linger_seconds < stall,
+                "replay linger_seconds ({}) must stay under the {stall}s stream stall watchdog",
+                r.replay.linger_seconds
+            );
+        }
+        let Self::Multi(m) = self else {
+            return Ok(());
+        };
+        anyhow::ensure!(
+            !m.sources.is_empty(),
+            "[data_source] type = \"multi\" needs at least one [[data_source.sources]]"
+        );
+        let mut names = std::collections::HashSet::new();
+        for c in &m.sources {
+            anyhow::ensure!(
+                !c.name.is_empty(),
+                "every multi data_source child needs a name"
+            );
+            anyhow::ensure!(
+                names.insert(c.name.as_str()),
+                "multi data_source child name `{}` is used twice",
+                c.name
+            );
+            anyhow::ensure!(
+                !matches!(c.source, Self::Multi(_)),
+                "multi data_source child `{}` cannot itself be multi",
+                c.name
+            );
+            anyhow::ensure!(
+                !matches!(c.source, Self::Replay(_)),
+                "multi data_source child `{}` cannot be a replay (replay the merged stream \
+                 instead)",
+                c.name
+            );
+        }
+        anyhow::ensure!(
+            m.grace_seconds > 0 && m.retention_seconds >= m.grace_seconds,
+            "multi data_source needs 0 < grace_seconds <= retention_seconds"
+        );
+        Ok(())
+    }
+}
+
+/// `type = "multi"`: every `[[data_source.sources]]` entry is a full single-source table
+/// (`type` plus that type's keys) with a `name`. All children get the same filters; rules
+/// see each update once, from whichever child delivered it first.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MultiSourceConfig {
+    pub sources: Vec<MultiChildConfig>,
+    /// Seconds the other children have to deliver an item after the first did before it
+    /// counts as missing from them.
+    #[serde(default = "defaults::multi_grace_seconds")]
+    pub grace_seconds: u64,
+    /// Seconds delivered keys are remembered for dedup; must exceed the slowest child's delay.
+    #[serde(default = "defaults::multi_retention_seconds")]
+    pub retention_seconds: u64,
+    /// Cap on remembered keys (dedup and divergence each).
+    #[serde(default = "defaults::multi_max_entries")]
+    pub max_entries: usize,
+    #[serde(flatten)]
+    pub buffer: BufferSettings,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MultiChildConfig {
+    /// Labels metrics and alerts; unique within the `multi` source.
+    pub name: String,
+    #[serde(flatten)]
+    pub source: DataSourceConfig,
 }
 
 /// Shipstern runtime buffer settings, shared by every source type.
@@ -82,6 +191,9 @@ pub struct YellowstoneGrpcSourceConfig {
     /// in the source channel can exhaust the pod's memory.
     #[serde(default = "defaults::max_decoding_message_size")]
     pub max_decoding_message_size: usize,
+    /// `processed` (default, fastest), `confirmed` or `finalized`.
+    #[serde(default)]
+    pub commitment: Option<shipstern::CommitmentLevel>,
     #[serde(flatten)]
     pub buffer: BufferSettings,
 }
@@ -93,6 +205,13 @@ pub struct WebsocketSourceConfig {
     /// `confirmed` (default) or `finalized`; `processed` cannot serve `getTransaction`.
     #[serde(default = "defaults::websocket_commitment")]
     pub commitment: String,
+    /// JSON-RPC endpoint for `getTransaction`; defaults to `[rpc] url`. Set it to the same
+    /// provider as `url` when this source is meant to be independent of `[rpc]`.
+    #[serde(default)]
+    pub rpc_url: Option<Url>,
+    /// Headers for `rpc_url`; default to `[rpc.headers]` when `rpc_url` is unset, else none.
+    #[serde(default)]
+    pub rpc_headers: Option<HashMap<String, String>>,
     #[serde(flatten)]
     pub buffer: BufferSettings,
 }
@@ -115,6 +234,15 @@ pub struct KafkaSourceConfig {
     pub buffer: BufferSettings,
 }
 
+/// A replay file (see `data_source::replay`) played in slot order at original speed × `speed`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReplaySourceConfig {
+    #[serde(flatten)]
+    pub replay: data_source::ReplayConfig,
+    #[serde(flatten)]
+    pub buffer: BufferSettings,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct RpcConfig {
     pub url: Url,
@@ -132,6 +260,8 @@ pub enum SinkConfig {
     Betterstack(BetterstackSinkConfig),
     /// JSON lines on stdout; for local runs.
     Stdout(StdoutSinkConfig),
+    /// JSON lines appended to a file, with `emitted_at`; for drills.
+    Jsonl(JsonlSinkConfig),
 }
 
 impl SinkConfig {
@@ -141,6 +271,7 @@ impl SinkConfig {
             Self::Slack(s) => &s.id,
             Self::Betterstack(b) => &b.id,
             Self::Stdout(s) => &s.id,
+            Self::Jsonl(s) => &s.id,
         }
     }
 }
@@ -148,6 +279,13 @@ impl SinkConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct StdoutSinkConfig {
     pub id: SinkId,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JsonlSinkConfig {
+    pub id: SinkId,
+    /// File the alerts are appended to; several sinks may share it.
+    pub path: std::path::PathBuf,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -169,6 +307,10 @@ pub struct SlackConfig {
     pub channel: String,
     #[serde(default = "defaults::slack_timeout_seconds")]
     pub timeout_seconds: u64,
+    /// A dedicated (muted) channel for canaries. Unset, canaries are acknowledged without
+    /// posting, so they never reach the incident channel either way.
+    #[serde(default)]
+    pub canary_channel: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -183,6 +325,7 @@ impl ObservabilityConfig {
         self.betterstack.as_ref().map(|hb| HeartbeatSettings {
             url: hb.heartbeat_url.as_str(),
             interval: Duration::from_secs(hb.heartbeat_interval_seconds),
+            gate_on_canary: hb.gate_on_canary,
         })
     }
 }
@@ -205,6 +348,10 @@ pub struct BetterstackSinkConfig {
 pub struct BetterstackHeartbeatConfig {
     pub heartbeat_url: String,
     pub heartbeat_interval_seconds: u64,
+    /// Withhold the heartbeat while an armed canary misses its sink (default on; a no-op
+    /// when no `health.canary` rule is configured).
+    #[serde(default = "defaults::gate_enabled")]
+    pub gate_on_canary: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -264,10 +411,184 @@ mod defaults {
         "latest".into()
     }
 
+    pub fn multi_grace_seconds() -> u64 {
+        30
+    }
+    pub fn multi_retention_seconds() -> u64 {
+        300
+    }
+    pub fn multi_max_entries() -> usize {
+        1_000_000
+    }
+
     pub fn gate_enabled() -> bool {
         true
     }
     pub fn fleet_gate_default_ttl_seconds() -> u64 {
         10 * 60
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(toml: &str) -> Result<DataSourceConfig> {
+        #[derive(Deserialize)]
+        struct Doc {
+            data_source: DataSourceConfig,
+        }
+        let doc: Doc = Config::builder()
+            .add_source(File::from_str(toml, FileFormat::Toml))
+            .build()?
+            .try_deserialize()?;
+        Ok(doc.data_source)
+    }
+
+    #[test]
+    fn multi_data_source_parses_with_children_of_any_type() {
+        let ds = parse(
+            r#"
+            [data_source]
+            type = "multi"
+            grace_seconds = 20
+            sources_channel_size = 500
+
+            [[data_source.sources]]
+            name = "a"
+            type = "yellowstone_grpc"
+            endpoint = "https://grpc.a.example"
+            token = "t"
+            commitment = "confirmed"
+
+            [[data_source.sources]]
+            name = "b"
+            type = "websocket"
+            url = "wss://ws.b.example"
+            rpc_url = "https://rpc.b.example"
+            [data_source.sources.rpc_headers]
+            x-api-key = "k"
+            "#,
+        )
+        .unwrap();
+        ds.validate().unwrap();
+        assert!(ds.has_yellowstone());
+        let DataSourceConfig::Multi(m) = ds else {
+            panic!("not multi")
+        };
+        assert_eq!((m.grace_seconds, m.retention_seconds), (20, 300));
+        assert_eq!(m.buffer.sources_channel_size, 500);
+        let DataSourceConfig::YellowstoneGrpc(a) = &m.sources[0].source else {
+            panic!("child a")
+        };
+        assert_eq!(a.timeout_seconds, 120);
+        assert!(matches!(
+            a.commitment,
+            Some(shipstern::CommitmentLevel::Confirmed)
+        ));
+        let DataSourceConfig::Websocket(b) = &m.sources[1].source else {
+            panic!("child b")
+        };
+        assert_eq!(b.commitment, "confirmed");
+        assert_eq!(b.rpc_headers.as_ref().unwrap()["x-api-key"], "k");
+    }
+
+    #[test]
+    fn multi_data_source_rejects_bad_children() {
+        let dup = parse(
+            r#"
+            [data_source]
+            type = "multi"
+            [[data_source.sources]]
+            name = "a"
+            type = "websocket"
+            url = "wss://x"
+            [[data_source.sources]]
+            name = "a"
+            type = "websocket"
+            url = "wss://y"
+            "#,
+        )
+        .unwrap();
+        assert!(dup.validate().is_err());
+        let nested = parse(
+            r#"
+            [data_source]
+            type = "multi"
+            [[data_source.sources]]
+            name = "inner"
+            type = "multi"
+            sources = []
+            "#,
+        )
+        .unwrap();
+        assert!(nested.validate().is_err());
+        let empty = parse("[data_source]\ntype = \"multi\"\nsources = []\n").unwrap();
+        assert!(empty.validate().is_err());
+        let replay_child = parse(
+            r#"
+            [data_source]
+            type = "multi"
+            [[data_source.sources]]
+            name = "r"
+            type = "replay"
+            path = "incident.jsonl"
+            "#,
+        )
+        .unwrap();
+        assert!(replay_child.validate().is_err());
+    }
+
+    #[test]
+    fn stall_watchdog_covers_yellowstone_multi_and_replay() {
+        let replay =
+            parse("[data_source]\ntype = \"replay\"\npath = \"incident.jsonl\"\n").unwrap();
+        replay.validate().unwrap();
+        assert!(replay.is_finite());
+        assert!(replay.stall_watchdog());
+        let grpc = parse(
+            "[data_source]\ntype = \"yellowstone_grpc\"\nendpoint = \"https://g\"\ntoken = \"t\"\n",
+        )
+        .unwrap();
+        assert!(grpc.stall_watchdog() && !grpc.is_finite());
+        let multi_grpc = parse(
+            r#"
+            [data_source]
+            type = "multi"
+            [[data_source.sources]]
+            name = "g"
+            type = "yellowstone_grpc"
+            endpoint = "https://g"
+            token = "t"
+            [[data_source.sources]]
+            name = "w"
+            type = "websocket"
+            url = "wss://w"
+            "#,
+        )
+        .unwrap();
+        assert!(multi_grpc.stall_watchdog());
+        let multi_ws = parse(
+            r#"
+            [data_source]
+            type = "multi"
+            [[data_source.sources]]
+            name = "w"
+            type = "websocket"
+            url = "wss://w"
+            "#,
+        )
+        .unwrap();
+        assert!(!multi_ws.stall_watchdog());
+        let ws = parse("[data_source]\ntype = \"websocket\"\nurl = \"wss://w\"\n").unwrap();
+        assert!(!ws.stall_watchdog());
+    }
+
+    #[test]
+    fn replay_linger_must_stay_under_the_stall_watchdog() {
+        let long =
+            parse("[data_source]\ntype = \"replay\"\npath = \"i.jsonl\"\nlinger_seconds = 600\n")
+                .unwrap();
+        assert!(long.validate().is_err());
     }
 }

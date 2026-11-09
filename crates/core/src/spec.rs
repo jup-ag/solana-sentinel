@@ -5,11 +5,16 @@
 //! traits so every program fits one registry entry.
 
 use crate::deps::{Deps, ProgramDeps};
-use crate::handler::RuleHandler;
+use crate::dynamic::DynamicScope;
+use crate::handler::{HandlerLiveness, RuleHandler};
 use crate::parser::{
-    scoped_parser_id, FrameworkParser, PipelineKind, StreamInput, StreamPipeline, TxGate,
+    scoped_parser_id, FrameworkParser, InputMatcher, PipelineKind, StreamInput, StreamPipeline,
+    TxGate,
 };
 use crate::poll::{spawn_poll_loop, PollSource};
+use crate::reactor::{
+    spawn_reactor_refresh_loops, BuiltReactor, ReactorEntry, ReactorRule, ValidatedReactor,
+};
 use crate::rule::RuleConfigError;
 use crate::rule_set::{PollRules, StreamRules, ValidatedPoll, ValidatedStream};
 use crate::subscription::Subscription;
@@ -21,6 +26,7 @@ use domain::alert::Alert;
 use domain::programs::Program;
 use domain::rules::RuleId;
 use futures::future::BoxFuture;
+use observability::liveness::FeedKind;
 use shipstern::filter_pipeline::FilterPipeline;
 use shipstern::handler::BoxPipeline;
 use shipstern_core::Parser;
@@ -137,6 +143,7 @@ where
             stream: Some(StreamReport {
                 per_rule: self.rules.subscriptions(),
                 union: self.rules.static_subscription(),
+                dynamic: self.rules.dynamic_scope().clone(),
             }),
             polls: Vec::new(),
         }
@@ -152,12 +159,14 @@ where
         let kind = P::Input::KIND;
         let base_id = self.parser.id().into_owned();
         let static_subscription = self.rules.static_subscription();
+        let dynamic = self.rules.dynamic_scope().clone();
+        let per_rule = self.rules.subscriptions();
         let rules = self.rules.build(deps, &ctx.bootstrap).await?;
         let rule_names: Vec<_> = rules.iter().map(|r| r.id.name).collect();
 
         let subscription = static_subscription
             .clone()
-            .union(out.deps.dynamic_subscription());
+            .union(out.deps.tagged_dynamic_subscription().select(&dynamic));
         let subs = kind.prefilters(&subscription);
         if subs.is_empty() {
             warn!(
@@ -169,7 +178,27 @@ where
             return Ok(());
         }
 
-        let handler = RuleHandler::new(rules.clone(), ctx.alerts_tx.clone());
+        let liveness = &ctx.bootstrap.liveness;
+        let pipeline_feed = liveness.feed(program.as_str(), kind.feed_kind(), &base_id, None);
+        let rule_feeds = per_rule
+            .iter()
+            .map(|(id, sub)| {
+                (
+                    InputMatcher::from_subscription(sub),
+                    liveness.feed(
+                        program.as_str(),
+                        FeedKind::Rule,
+                        id.name,
+                        Some(&pipeline_feed),
+                    ),
+                )
+            })
+            .collect();
+        let handler =
+            RuleHandler::new(rules.clone(), ctx.alerts_tx.clone()).with_liveness(HandlerLiveness {
+                pipeline: pipeline_feed,
+                rules: rule_feeds,
+            });
         let gate =
             (kind == PipelineKind::Instruction).then(|| TxGate::from_subscription(&subscription));
         let subscriptions = subs.len();
@@ -187,6 +216,7 @@ where
             kind = kind.as_str(),
             parser = %base_id,
             subscriptions,
+            dynamic = %dynamic,
             rules = ?rule_names,
             "Pipeline built"
         );
@@ -197,6 +227,8 @@ where
             base_id,
             parser_prefilter: self.parser.prefilter(),
             static_subscription,
+            dynamic,
+            subscription,
             subscriptions,
         });
         Ok(())
@@ -282,7 +314,7 @@ impl<S: PollSource> ValidatedPipeline for PollValidated<S> {
                 program,
                 Arc::clone(&self.source),
                 bucket,
-                Arc::clone(&ctx.bootstrap.rpc),
+                &ctx.bootstrap,
                 ctx.alerts_tx.clone(),
                 ctx.cancel_token.clone(),
                 ctx.tracker,
@@ -299,6 +331,7 @@ pub struct ProgramSpec {
     program: Program,
     deps: DepsBootstrap,
     pipelines: Vec<Box<dyn Pipeline>>,
+    reactors: Vec<ReactorEntry>,
 }
 
 impl ProgramSpec {
@@ -307,6 +340,7 @@ impl ProgramSpec {
             program,
             deps: bootstrap_deps::<()>,
             pipelines: Vec::new(),
+            reactors: Vec::new(),
         }
     }
 
@@ -396,9 +430,20 @@ impl ProgramSpec {
         self
     }
 
+    /// A rule fed by every program's alerts (see [`crate::reactor`]) rather than by a parser.
+    #[must_use]
+    pub fn reactor<R: ReactorRule>(mut self) -> Self {
+        self.reactors.push(ReactorEntry::of::<R>());
+        self
+    }
+
     /// Every rule this program can run, whether or not it is configured.
     pub fn rule_ids(&self) -> Vec<RuleId> {
-        self.pipelines.iter().flat_map(|p| p.rule_ids()).collect()
+        self.pipelines
+            .iter()
+            .flat_map(|p| p.rule_ids())
+            .chain(self.reactors.iter().map(|r| r.id))
+            .collect()
     }
 
     /// Typed-config validation of the configured rules. No I/O; errors name program, rule and field.
@@ -416,10 +461,24 @@ impl ProgramSpec {
                 pipelines.push(validated);
             }
         }
+        let mut reactors = Vec::new();
+        for entry in &self.reactors {
+            let Some(value) = raw.get(entry.id.name) else {
+                continue;
+            };
+            let validated =
+                (entry.validate)(value.clone()).map_err(|source| RuleConfigError::Config {
+                    program: self.program,
+                    rule: entry.id.name,
+                    source: Box::new(source),
+                })?;
+            reactors.push(validated);
+        }
         Ok(ValidatedProgram {
             program: self.program,
             deps: self.deps,
             pipelines,
+            reactors,
         })
     }
 }
@@ -429,6 +488,7 @@ pub struct ValidatedProgram {
     program: Program,
     deps: DepsBootstrap,
     pipelines: Vec<Box<dyn ValidatedPipeline>>,
+    reactors: Vec<ValidatedReactor>,
 }
 
 impl ValidatedProgram {
@@ -436,15 +496,20 @@ impl ValidatedProgram {
         self.program
     }
 
-    /// The configured rules, in registration order.
+    /// The configured rules, in registration order (reactors last).
     pub fn rule_ids(&self) -> Vec<RuleId> {
-        self.pipelines.iter().flat_map(|p| p.rule_ids()).collect()
+        self.pipelines
+            .iter()
+            .flat_map(|p| p.rule_ids())
+            .chain(self.reactors.iter().map(|r| r.id))
+            .collect()
     }
 
     pub fn report(&self) -> ProgramReport {
         ProgramReport {
             program: self.program,
             pipelines: self.pipelines.iter().map(|p| p.report()).collect(),
+            reactors: self.reactors.iter().map(|r| r.id).collect(),
         }
     }
 
@@ -460,10 +525,21 @@ impl ValidatedProgram {
             deps: Arc::clone(&deps.0),
             pipelines: Vec::new(),
             streams: Vec::new(),
+            reactors: Vec::new(),
         };
         for pipeline in self.pipelines {
             pipeline.start(self.program, &deps, ctx, &mut out).await?;
         }
+        for reactor in self.reactors {
+            let built = reactor.build(self.program, &deps, &ctx.bootstrap).await?;
+            out.reactors.push(built);
+        }
+        spawn_reactor_refresh_loops(
+            &out.reactors,
+            &ctx.bootstrap,
+            &ctx.cancel_token,
+            ctx.tracker,
+        );
         info!(
             program = %self.program,
             elapsed_ms = started.elapsed().as_millis() as u64,
@@ -480,6 +556,8 @@ pub struct StartedProgram {
     pub deps: Arc<dyn ProgramDeps>,
     pub pipelines: Vec<StreamPipeline>,
     pub(crate) streams: Vec<InstalledStream>,
+    /// Built reactors; the service feeds them through the alert tap.
+    pub reactors: Vec<BuiltReactor>,
 }
 
 /// One stream pipeline as built, enough to recompute its filters on refresh.
@@ -488,6 +566,11 @@ pub(crate) struct InstalledStream {
     pub base_id: String,
     pub parser_prefilter: shipstern_core::Prefilter,
     pub static_subscription: Subscription,
+    /// The parts of the dynamic subscription this pipeline takes.
+    pub dynamic: DynamicScope,
+    /// Static plus selected dynamic subscription, as the pipeline was built; the refresh loop
+    /// pushes only when this changes.
+    pub subscription: Subscription,
     pub subscriptions: usize,
 }
 
@@ -496,6 +579,7 @@ pub(crate) struct InstalledStream {
 pub struct ProgramReport {
     pub program: Program,
     pub pipelines: Vec<PipelineReport>,
+    pub reactors: Vec<RuleId>,
 }
 
 pub struct PipelineReport {
@@ -509,6 +593,8 @@ pub struct PipelineReport {
 pub struct StreamReport {
     pub per_rule: Vec<(RuleId, Subscription)>,
     pub union: Subscription,
+    /// Which parts of the program's dynamic subscription the pipeline adds on top of `union`.
+    pub dynamic: DynamicScope,
 }
 
 pub struct PollReport {
@@ -530,6 +616,7 @@ impl Display for ProgramReport {
                     writeln!(f, "    {}: {}", id.name, describe(pf))?;
                 }
                 writeln!(f, "    subscription: {}", describe(&stream.union))?;
+                writeln!(f, "    dynamic: {}", stream.dynamic)?;
             }
             for poll in &p.polls {
                 writeln!(
@@ -543,6 +630,13 @@ impl Display for ProgramReport {
                     writeln!(f, "      {a}")?;
                 }
             }
+        }
+        for reactor in &self.reactors {
+            writeln!(
+                f,
+                "  reactor {} (fed by every program's alerts)",
+                reactor.name
+            )?;
         }
         Ok(())
     }
@@ -636,6 +730,28 @@ mod tests {
             .union
             .clone();
         assert!(union.tx_accounts_include.contains(&WATCHED));
+
+        // Default scope: the whole dynamic subscription, as before scopes existed.
+        let report = validated.report();
+        assert_eq!(
+            report.pipelines[0].stream.as_ref().unwrap().dynamic,
+            DynamicScope::All
+        );
+        assert!(report.to_string().contains("dynamic: all"));
+
+        let tag = crate::DynamicTag::new("followed");
+        let scoped = ProgramSpec::new(PROGRAM).instruction(
+            RawInstructionParser,
+            StreamRules::new()
+                .register::<AnyIx>()
+                .dynamic(DynamicScope::only([tag])),
+        );
+        let report = scoped.validate(&raw).unwrap().report();
+        assert_eq!(
+            report.pipelines[0].stream.as_ref().unwrap().dynamic,
+            DynamicScope::only([tag])
+        );
+        assert!(report.to_string().contains("dynamic: followed"));
 
         let unknown = RawRuleMap::from([("nope".to_string(), config::Value::from(1))]);
         assert!(matches!(

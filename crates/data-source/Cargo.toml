@@ -5,7 +5,13 @@ publish.workspace = true
 repository.workspace = true
 version.workspace = true
 
+[[bin]]
+name = "sentinel-replay-record"
+path = "src/bin/sentinel-replay-record.rs"
+
 [dependencies]
+utility = { workspace = true }
+observability = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 base64 = "0.23.1"
@@ -15,6 +21,8 @@ futures = { workspace = true }
 prost = { workspace = true }
 rdkafka = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+tracing-subscriber = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
@@ -35,6 +43,12 @@ solana-transaction-status-client-types = "3.1"
 solana-message = "~4.4.1"
 solana-transaction = { version = "~4.1", features = ["wincode"] }
 wincode = "0.5"
+
+[dev-dependencies]
+config = { workspace = true }
+parking_lot = { workspace = true }
+rustls = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

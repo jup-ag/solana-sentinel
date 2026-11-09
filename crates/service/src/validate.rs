@@ -11,7 +11,14 @@ pub fn validate_programs(
     config: &SentinelConfig,
     registry: &[fn() -> ProgramSpec],
 ) -> Result<Vec<ValidatedProgram>, WiringError> {
-    let programs = config.programs_with_rules();
+    validate_program_rules(config.programs_with_rules(), registry)
+}
+
+/// [`validate_programs`] over rules already grouped by program.
+pub fn validate_program_rules(
+    programs: &[ProgramRules],
+    registry: &[fn() -> ProgramSpec],
+) -> Result<Vec<ValidatedProgram>, WiringError> {
     let mut out = Vec::with_capacity(programs.len());
     let mut seen: HashSet<String> = HashSet::with_capacity(programs.len());
 

@@ -9,10 +9,12 @@ use alerting::local_gate::LocalGate;
 use alerting::router::Router;
 use alerting::sinks::betterstack::BetterstackSink;
 use alerting::sinks::clickhouse::ClickhouseSink;
+use alerting::sinks::jsonl::JsonlSink;
 use alerting::sinks::slack::SlackSink;
 use alerting::sinks::stdout::StdoutSink;
 use alerting::sinks::{AlertSink, AlertSinkError};
 use anyhow::Context;
+use domain::canary::CanaryRoute;
 use domain::programs::Program;
 use domain::rules::RuleId;
 use domain::sinks::SinkId;
@@ -70,7 +72,9 @@ pub fn build_alerting_router(
     Ok((Router::new(routes, sinks), cooldowns))
 }
 
-fn build_sinks(cfgs: &[SinkConfig]) -> Result<HashMap<SinkId, Box<dyn AlertSink>>, WiringError> {
+pub(crate) fn build_sinks(
+    cfgs: &[SinkConfig],
+) -> Result<HashMap<SinkId, Box<dyn AlertSink>>, WiringError> {
     let mut out: HashMap<SinkId, Box<dyn AlertSink>> = HashMap::with_capacity(cfgs.len());
     for cfg in cfgs {
         let id = cfg.id().clone();
@@ -85,6 +89,14 @@ fn build_sinks(cfgs: &[SinkConfig]) -> Result<HashMap<SinkId, Box<dyn AlertSink>
             SinkConfig::Slack(s) => Box::new(build_slack(s)?),
             SinkConfig::Betterstack(b) => Box::new(build_betterstack(b)?),
             SinkConfig::Stdout(s) => Box::new(StdoutSink::new(s.id.clone())),
+            SinkConfig::Jsonl(s) => {
+                Box::new(JsonlSink::open(s.id.clone(), &s.path).map_err(|e| {
+                    WiringError::SinkBuild {
+                        id: s.id.clone(),
+                        source: AlertSinkError::Jsonl(format!("{}: {e}", s.path.display())),
+                    }
+                })?)
+            }
         };
         out.insert(id, sink);
     }
@@ -108,6 +120,7 @@ fn build_slack(cfg: &SlackConfig) -> Result<SlackSink, WiringError> {
         cfg.channel.clone(),
         cfg.timeout_seconds,
     )
+    .map(|sink| sink.with_canary_channel(cfg.canary_channel.clone()))
     .map_err(|source| WiringError::SinkBuild {
         id: cfg.id.clone(),
         source,
@@ -175,12 +188,22 @@ async fn connect_to_redis_cluster(redis_url: &str) -> anyhow::Result<ClusterConn
         .context("Failed to connect to Redis cluster")
 }
 
+/// Every canary route the configured rules imply: one per distinct sink set and one per
+/// program. The `health.canary` rule arms the ones of its scope.
+pub fn canary_routes(programs: &[ProgramRules]) -> Vec<CanaryRoute> {
+    domain::canary::canary_routes(programs.iter().flat_map(|p| {
+        p.rules
+            .iter()
+            .map(|r| (p.program.as_str(), r.sinks.as_slice()))
+    }))
+}
+
 type Routes = HashMap<RuleId, Vec<SinkId>>;
 pub type Cooldowns = HashMap<RuleId, Duration>;
 
 /// Routes and cooldowns for every configured rule. Rule identity comes from the
 /// validated programs, so every route here is a rule that will actually run.
-fn build_routes(
+pub(crate) fn build_routes(
     programs: &[ProgramRules],
     validated: &[ValidatedProgram],
     sinks: &HashMap<SinkId, Box<dyn AlertSink>>,
