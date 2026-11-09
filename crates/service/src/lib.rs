@@ -25,6 +25,7 @@ use observability::slot_tracker::SlotTracker;
 use observability::{prometheus, run_observability_stack};
 use solana_sentinel::reactor::spawn_alert_tap;
 use solana_sentinel::{Liveness, ProgramSpec, ValidatedProgram};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -64,6 +65,7 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
 
     let cancel_token = CancellationToken::new();
     let signalled = listen_for_shutdown_signal(&cancel_token);
+    let completed = Arc::new(AtomicBool::new(false));
     let tracker = TaskTracker::new();
     let rpc = Arc::new(build_rpc_client(
         config.rpc().url.as_str(),
@@ -107,7 +109,7 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
         &pod_id,
         cancel_token.clone(),
         &tracker,
-        config.data_source().has_yellowstone(),
+        config.data_source().stall_watchdog(),
     )
     .await
     .context("Failed to initialize slot tracker")?;
@@ -140,7 +142,8 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
         slot_tracker.clone(),
         pod_id.clone(),
         liveness.clone(),
-    );
+    )
+    .with_completion_flag(Arc::clone(&completed));
     // Bootstrap can take minutes of RPC; a shutdown during it skips straight to the drain.
     let reactors = tokio::select! {
         started = consumer_service.start(&tracker) => started.context("Failed to start consumer")?,
@@ -168,7 +171,7 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
     alerting_service.start(&tracker);
 
     // Wait for shutdown signal (Ctrl+C, SIGTERM) or cancellation token to be triggered
-    let reason = wait_for_shutdown(&cancel_token, &signalled).await;
+    let reason = wait_for_shutdown(&cancel_token, &signalled, &completed).await;
 
     cancel_token.cancel();
     // The alert tap runs until every rule sender is gone; this one would keep it (and so

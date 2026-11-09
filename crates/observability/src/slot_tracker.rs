@@ -22,7 +22,7 @@ const SLOT_CHECKPOINT_MAX_DIFF_THRESHOLD: u64 = 11_000; //  ~70 minutes at 400ms
 const SLOT_CHECKPOINT_KEY_REDIS: &str = "slot_checkpoint:last_seen_slot"; // Redis key to store the last seen slot checkpoint.
                                                                           // No slot for this long means a hung stream (no keepalive covers it); stop so the pod restarts.
                                                                           // Longer than a few client reconnect backoffs, which recover in place.
-const STREAM_STALL_TIMEOUT: Duration = Duration::from_secs(120);
+pub const STREAM_STALL_TIMEOUT: Duration = Duration::from_secs(120);
 // Bootstrap runs before the stream starts, so the first slot gets a longer budget.
 const FIRST_SLOT_TIMEOUT: Duration = Duration::from_secs(600);
 

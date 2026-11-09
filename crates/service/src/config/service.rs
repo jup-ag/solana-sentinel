@@ -53,7 +53,8 @@ impl Default for CooldownGateConfig {
 /// Where the stream comes from. Every variant is a shipstern source running in its
 /// runtime: `yellowstone_grpc` (production default), `websocket` (Solana PubSub, for
 /// nodes without Geyser), `kafka` (janus raw topics), `multi` (several of those merged
-/// and deduplicated, with per-child lag / divergence tracking).
+/// and deduplicated, with per-child lag / divergence tracking), `replay` (a recorded
+/// incident window, for drills; the service stops cleanly once it is played).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DataSourceConfig {
@@ -61,20 +62,48 @@ pub enum DataSourceConfig {
     Websocket(WebsocketSourceConfig),
     Kafka(KafkaSourceConfig),
     Multi(MultiSourceConfig),
+    Replay(ReplaySourceConfig),
 }
 
 impl DataSourceConfig {
+    /// A source that ends on its own (a replay), after which the service stops with success.
+    pub const fn is_finite(&self) -> bool {
+        matches!(self, Self::Replay(_))
+    }
+
     /// Whether the stream (or any child of a `multi` stream) is Yellowstone gRPC.
     pub fn has_yellowstone(&self) -> bool {
         match self {
             Self::YellowstoneGrpc(_) => true,
             Self::Multi(m) => m.sources.iter().any(|c| c.source.has_yellowstone()),
+            Self::Websocket(_) | Self::Kafka(_) | Self::Replay(_) => false,
+        }
+    }
+
+    /// Whether the slot tracker's stall watchdog applies: the source delivers a slot update
+    /// for every slot, so a silence means the stream is stuck. Yellowstone does (and so does a
+    /// `multi` with a Yellowstone child, whose slots are merged); a replay emits every slot of
+    /// its window, so a stuck replay stops the service (exit 1) instead of hanging the drill.
+    /// Kafka synthesizes slots from records and PubSub has no slot feed here.
+    pub fn stall_watchdog(&self) -> bool {
+        match self {
+            Self::YellowstoneGrpc(_) | Self::Replay(_) => true,
+            Self::Multi(_) => self.has_yellowstone(),
             Self::Websocket(_) | Self::Kafka(_) => false,
         }
     }
 
-    /// Structure checks that need no I/O: `multi` children named, unique, not nested.
+    /// Structure checks that need no I/O: `multi` children named, unique, not nested;
+    /// a replay's linger shorter than the stall watchdog's budget.
     pub fn validate(&self) -> Result<()> {
+        if let Self::Replay(r) = self {
+            let stall = observability::slot_tracker::STREAM_STALL_TIMEOUT.as_secs();
+            anyhow::ensure!(
+                r.replay.linger_seconds < stall,
+                "replay linger_seconds ({}) must stay under the {stall}s stream stall watchdog",
+                r.replay.linger_seconds
+            );
+        }
         let Self::Multi(m) = self else {
             return Ok(());
         };
@@ -96,6 +125,12 @@ impl DataSourceConfig {
             anyhow::ensure!(
                 !matches!(c.source, Self::Multi(_)),
                 "multi data_source child `{}` cannot itself be multi",
+                c.name
+            );
+            anyhow::ensure!(
+                !matches!(c.source, Self::Replay(_)),
+                "multi data_source child `{}` cannot be a replay (replay the merged stream \
+                 instead)",
                 c.name
             );
         }
@@ -199,6 +234,15 @@ pub struct KafkaSourceConfig {
     pub buffer: BufferSettings,
 }
 
+/// A replay file (see `data_source::replay`) played in slot order at original speed × `speed`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReplaySourceConfig {
+    #[serde(flatten)]
+    pub replay: data_source::ReplayConfig,
+    #[serde(flatten)]
+    pub buffer: BufferSettings,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct RpcConfig {
     pub url: Url,
@@ -216,6 +260,8 @@ pub enum SinkConfig {
     Betterstack(BetterstackSinkConfig),
     /// JSON lines on stdout; for local runs.
     Stdout(StdoutSinkConfig),
+    /// JSON lines appended to a file, with `emitted_at`; for drills.
+    Jsonl(JsonlSinkConfig),
 }
 
 impl SinkConfig {
@@ -225,6 +271,7 @@ impl SinkConfig {
             Self::Slack(s) => &s.id,
             Self::Betterstack(b) => &b.id,
             Self::Stdout(s) => &s.id,
+            Self::Jsonl(s) => &s.id,
         }
     }
 }
@@ -232,6 +279,13 @@ impl SinkConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct StdoutSinkConfig {
     pub id: SinkId,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JsonlSinkConfig {
+    pub id: SinkId,
+    /// File the alerts are appended to; several sinks may share it.
+    pub path: std::path::PathBuf,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -471,5 +525,70 @@ mod tests {
         assert!(nested.validate().is_err());
         let empty = parse("[data_source]\ntype = \"multi\"\nsources = []\n").unwrap();
         assert!(empty.validate().is_err());
+        let replay_child = parse(
+            r#"
+            [data_source]
+            type = "multi"
+            [[data_source.sources]]
+            name = "r"
+            type = "replay"
+            path = "incident.jsonl"
+            "#,
+        )
+        .unwrap();
+        assert!(replay_child.validate().is_err());
+    }
+
+    #[test]
+    fn stall_watchdog_covers_yellowstone_multi_and_replay() {
+        let replay =
+            parse("[data_source]\ntype = \"replay\"\npath = \"incident.jsonl\"\n").unwrap();
+        replay.validate().unwrap();
+        assert!(replay.is_finite());
+        assert!(replay.stall_watchdog());
+        let grpc = parse(
+            "[data_source]\ntype = \"yellowstone_grpc\"\nendpoint = \"https://g\"\ntoken = \"t\"\n",
+        )
+        .unwrap();
+        assert!(grpc.stall_watchdog() && !grpc.is_finite());
+        let multi_grpc = parse(
+            r#"
+            [data_source]
+            type = "multi"
+            [[data_source.sources]]
+            name = "g"
+            type = "yellowstone_grpc"
+            endpoint = "https://g"
+            token = "t"
+            [[data_source.sources]]
+            name = "w"
+            type = "websocket"
+            url = "wss://w"
+            "#,
+        )
+        .unwrap();
+        assert!(multi_grpc.stall_watchdog());
+        let multi_ws = parse(
+            r#"
+            [data_source]
+            type = "multi"
+            [[data_source.sources]]
+            name = "w"
+            type = "websocket"
+            url = "wss://w"
+            "#,
+        )
+        .unwrap();
+        assert!(!multi_ws.stall_watchdog());
+        let ws = parse("[data_source]\ntype = \"websocket\"\nurl = \"wss://w\"\n").unwrap();
+        assert!(!ws.stall_watchdog());
+    }
+
+    #[test]
+    fn replay_linger_must_stay_under_the_stall_watchdog() {
+        let long =
+            parse("[data_source]\ntype = \"replay\"\npath = \"i.jsonl\"\nlinger_seconds = 600\n")
+                .unwrap();
+        assert!(long.validate().is_err());
     }
 }
