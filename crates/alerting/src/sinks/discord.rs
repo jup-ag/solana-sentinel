@@ -55,12 +55,15 @@ enum Endpoint {
 }
 
 impl Endpoint {
-    /// Posts with `wait=true`: without it Discord answers 204 before saving the
-    /// message, and a message that fails to save returns no error. Other query
-    /// params (e.g. `thread_id`) are kept.
-    fn webhook(raw: &str) -> Result<Self, url::ParseError> {
+    /// An https webhook that posts with `wait=true`: without it Discord answers
+    /// 204 before saving the message, and a message that fails to save returns
+    /// no error. Other query params (e.g. `thread_id`) are kept.
+    fn webhook(raw: &str) -> Result<Self, String> {
         // `ParseError` does not echo its input, so the token stays out of errors.
-        let mut url = Url::parse(raw)?;
+        let mut url = Url::parse(raw).map_err(|e| format!("invalid webhook_url: {e}"))?;
+        if url.scheme() != "https" {
+            return Err("webhook_url must be an https URL".into());
+        }
         let token = url
             .path_segments()
             .and_then(|mut s| s.next_back())
@@ -127,18 +130,9 @@ impl DiscordSink {
         timeout_seconds: u64,
     ) -> Result<Self, AlertSinkError> {
         let endpoint = match (webhook_url, bot_token, channel_id) {
-            (Some(url), None, _) => {
-                if !url.starts_with("https://") {
-                    return Err(AlertSinkError::DiscordSinkError(format!(
-                        "discord sink `{id}`: webhook_url must be an https URL"
-                    )));
-                }
-                Endpoint::webhook(&url).map_err(|e| {
-                    AlertSinkError::DiscordSinkError(format!(
-                        "discord sink `{id}`: invalid webhook_url: {e}"
-                    ))
-                })?
-            }
+            (Some(url), None, _) => Endpoint::webhook(&url).map_err(|e| {
+                AlertSinkError::DiscordSinkError(format!("discord sink `{id}`: {e}"))
+            })?,
             (None, Some(token), Some(channel)) => Endpoint::Bot {
                 token,
                 channel_id: channel,
@@ -526,13 +520,16 @@ mod tests {
         (format!("http://{addr}"), rx)
     }
 
-    /// A sink pointed at the mock server. `build` insists on an https webhook
-    /// URL, so the struct is built directly here.
+    /// A sink pointed at the mock server. `Endpoint::webhook` insists on an
+    /// https URL, so the endpoint is built directly here.
     fn sink_for(url: &str) -> DiscordSink {
         DiscordSink {
             id: SinkId::new("test-discord"),
             http_client: HttpClient::new(),
-            endpoint: Endpoint::webhook(url).unwrap(),
+            endpoint: Endpoint::Webhook {
+                url: url.to_string(),
+                token: String::new(),
+            },
             retry_at: Mutex::new(None),
         }
     }
