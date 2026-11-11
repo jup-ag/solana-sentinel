@@ -32,8 +32,8 @@ const EMBED_TOTAL_LIMIT: usize = 6000;
 const CONTENT_LIMIT: usize = 2000;
 
 pub struct DiscordSink {
-    pub id: SinkId,
-    pub http_client: HttpClient,
+    id: SinkId,
+    http_client: HttpClient,
     endpoint: Endpoint,
     /// Discord's rate-limit deadline; posts before it are deferred, not attempted.
     retry_at: Mutex<Option<Instant>>,
