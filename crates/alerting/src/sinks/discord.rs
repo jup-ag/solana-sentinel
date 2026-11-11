@@ -155,6 +155,12 @@ impl DiscordSink {
 
         let http_client = HttpClient::builder()
             .timeout(Duration::from_secs(timeout_seconds))
+            // Discord may block requests without a `DiscordBot (url, version)` agent.
+            .user_agent(concat!(
+                "DiscordBot (https://github.com/jup-ag/solana-sentinel, ",
+                env!("CARGO_PKG_VERSION"),
+                ")"
+            ))
             .build()
             .map_err(|e| {
                 AlertSinkError::DiscordSinkError(format!("failed to build HTTP client: {e:#}"))
