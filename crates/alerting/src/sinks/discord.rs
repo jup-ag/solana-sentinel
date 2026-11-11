@@ -15,6 +15,7 @@ use reqwest::{Client as HttpClient, StatusCode};
 use serde::Serialize;
 use std::time::{Duration, Instant};
 use tracing::warn;
+use url::Url;
 
 const DISCORD_API_BASE: &str = "https://discord.com/api/v10";
 
@@ -44,14 +45,58 @@ pub struct DiscordSink {
 /// bot needs a token and a channel.
 #[derive(Clone)]
 enum Endpoint {
-    Webhook(String),
-    Bot { token: String, channel_id: String },
+    /// `token` is the URL's last path segment, kept to redact it from errors.
+    Webhook {
+        url: String,
+        token: String,
+    },
+    Bot {
+        token: String,
+        channel_id: String,
+    },
 }
 
 impl Endpoint {
+    /// Posts with `wait=true`: without it Discord answers 204 before saving the
+    /// message, and a message that fails to save returns no error. Other query
+    /// params (e.g. `thread_id`) are kept.
+    fn webhook(raw: &str) -> Result<Self, url::ParseError> {
+        // `ParseError` does not echo its input, so the token stays out of errors.
+        let mut url = Url::parse(raw)?;
+        let token = url
+            .path_segments()
+            .and_then(|mut s| s.next_back())
+            .unwrap_or_default()
+            .to_string();
+        let params: Vec<(String, String)> = url
+            .query_pairs()
+            .filter(|(k, _)| k != "wait")
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        url.query_pairs_mut()
+            .clear()
+            .extend_pairs(params)
+            .append_pair("wait", "true");
+        Ok(Self::Webhook {
+            url: url.into(),
+            token,
+        })
+    }
+
+    /// `text` with the credential removed, which also covers the webhook URL in
+    /// any form (escaped, path-only, different query).
+    fn redact(&self, text: &str) -> String {
+        let (Self::Webhook { token, .. } | Self::Bot { token, .. }) = self;
+        if token.is_empty() {
+            text.to_string()
+        } else {
+            text.replace(token.as_str(), "<redacted>")
+        }
+    }
+
     fn url(&self) -> String {
         match self {
-            Self::Webhook(url) => url.clone(),
+            Self::Webhook { url, .. } => url.clone(),
             Self::Bot { channel_id, .. } => {
                 format!("{DISCORD_API_BASE}/channels/{channel_id}/messages")
             }
@@ -91,7 +136,11 @@ impl DiscordSink {
                         "discord sink `{id}`: webhook_url must be an https URL"
                     )));
                 }
-                Endpoint::Webhook(url)
+                Endpoint::webhook(&url).map_err(|e| {
+                    AlertSinkError::DiscordSinkError(format!(
+                        "discord sink `{id}`: invalid webhook_url: {e}"
+                    ))
+                })?
             }
             (None, Some(token), Some(channel)) => Endpoint::Bot {
                 token,
@@ -183,10 +232,11 @@ impl DiscordSink {
                 if !status.is_success() {
                     // The body carries Discord's reason ("Invalid Webhook Token",
                     // "Missing Access", ...), which is worth more than the status.
+                    // Redact before truncating, so a cut can't split the token.
                     let body = resp.text().await.unwrap_or_default();
                     let err = AlertSinkError::DiscordSinkError(format!(
                         "discord http {status}: {}",
-                        truncate(body.trim(), 300)
+                        truncate(&self.endpoint.redact(body.trim()), 300)
                     ));
                     return Err((err, false, None));
                 }
@@ -225,8 +275,12 @@ impl DiscordSink {
 }
 
 // Keeps the reqwest source chain (e.g. the connect/TLS cause), which its Display alone drops.
+// The URL is stripped first: a webhook URL carries its token.
 fn discord_err(what: &str, e: reqwest::Error) -> AlertSinkError {
-    AlertSinkError::DiscordSinkError(format!("{what}: {:#}", anyhow::Error::from(e)))
+    AlertSinkError::DiscordSinkError(format!(
+        "{what}: {:#}",
+        anyhow::Error::from(e.without_url())
+    ))
 }
 
 /// Discord's rate-limit hint: how long to wait, and whether the limit is
@@ -268,7 +322,8 @@ async fn parse_rate_limit(resp: reqwest::Response) -> RateLimit {
         .max(0.0);
 
     RateLimit {
-        retry_after: Duration::from_secs_f64(secs),
+        // `try_` so an absurd hint (e.g. `inf`) can't panic the sink.
+        retry_after: Duration::try_from_secs_f64(secs).unwrap_or(Duration::from_secs(1)),
         global,
     }
 }
@@ -327,6 +382,8 @@ struct AllowedMentions {
 #[derive(Serialize)]
 struct DiscordEmbed {
     title: String,
+    /// Left out when empty: Discord rejects an empty description.
+    #[serde(skip_serializing_if = "String::is_empty")]
     description: String,
     color: u32,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -368,10 +425,14 @@ impl<'a> DiscordPayload<'a> {
 fn build_embed(a: &Alert) -> DiscordEmbed {
     let title = truncate(&format!("Rule : {}", a.rule.name), EMBED_TITLE_LIMIT);
     let description = truncate(a.message.trim(), EMBED_DESCRIPTION_LIMIT);
+    let footer = truncate(
+        &format!("{} | {}", a.rule.program.as_str(), a.severity),
+        EMBED_TITLE_LIMIT,
+    );
 
-    // Discord caps the whole embed at 6000 chars, so fields are added only
-    // while they fit in the remaining budget.
-    let mut used = title.chars().count() + description.chars().count();
+    // Discord caps the whole embed (title, description, fields and footer) at
+    // 6000 chars, so fields are added only while they fit in the remaining budget.
+    let mut used = title.chars().count() + description.chars().count() + footer.chars().count();
     let mut fields = Vec::new();
 
     for (k, v) in &a.metadata {
@@ -402,12 +463,7 @@ fn build_embed(a: &Alert) -> DiscordEmbed {
         color: severity_color(a.severity),
         fields,
         timestamp: a.fired_at.to_rfc3339_opts(SecondsFormat::Secs, true),
-        footer: DiscordFooter {
-            text: truncate(
-                &format!("{} | {}", a.rule.program.as_str(), a.severity),
-                EMBED_TITLE_LIMIT,
-            ),
-        },
+        footer: DiscordFooter { text: footer },
     }
 }
 
@@ -520,7 +576,7 @@ mod tests {
         DiscordSink {
             id: SinkId::new("test-discord"),
             http_client: HttpClient::new(),
-            endpoint: Endpoint::Webhook(url.to_string()),
+            endpoint: Endpoint::webhook(url).unwrap(),
             username: None,
             retry_at: Mutex::new(None),
         }

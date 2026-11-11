@@ -179,7 +179,7 @@ pub struct SlackConfig {
 ///   - `webhook_url`: a channel webhook (Server Settings → Integrations →
 ///     Webhooks). The token is part of the URL, so nothing else is needed.
 ///   - `bot_token` + `channel_id`: a bot token and the channel to post into.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct DiscordConfig {
     pub id: SinkId,
     #[serde(default)]
@@ -193,6 +193,22 @@ pub struct DiscordConfig {
     pub username: Option<String>,
     #[serde(default = "defaults::discord_timeout_seconds")]
     pub timeout_seconds: u64,
+}
+
+// Hand-written so a Debug-printed config never shows the webhook URL (which
+// embeds its token) or the bot token.
+impl std::fmt::Debug for DiscordConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let redacted = |s: &Option<String>| s.as_ref().map(|_| "<redacted>");
+        f.debug_struct("DiscordConfig")
+            .field("id", &self.id)
+            .field("webhook_url", &redacted(&self.webhook_url))
+            .field("bot_token", &redacted(&self.bot_token))
+            .field("channel_id", &self.channel_id)
+            .field("username", &self.username)
+            .field("timeout_seconds", &self.timeout_seconds)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
