@@ -129,6 +129,7 @@ pub struct RpcConfig {
 pub enum SinkConfig {
     Clickhouse(ClickhouseConfig),
     Slack(SlackConfig),
+    Discord(DiscordConfig),
     Betterstack(BetterstackSinkConfig),
     /// JSON lines on stdout; for local runs.
     Stdout(StdoutSinkConfig),
@@ -139,6 +140,7 @@ impl SinkConfig {
         match self {
             Self::Clickhouse(c) => &c.id,
             Self::Slack(s) => &s.id,
+            Self::Discord(d) => &d.id,
             Self::Betterstack(b) => &b.id,
             Self::Stdout(s) => &s.id,
         }
@@ -168,6 +170,28 @@ pub struct SlackConfig {
     pub bot_auth_token: String,
     pub channel: String,
     #[serde(default = "defaults::slack_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+/// Discord: a channel that receives the alert.
+///
+/// Two ways to authenticate, mutually exclusive:
+///   - `webhook_url`: a channel webhook (Server Settings → Integrations →
+///     Webhooks). The token is part of the URL, so nothing else is needed.
+///   - `bot_token` + `channel_id`: a bot token and the channel to post into.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DiscordConfig {
+    pub id: SinkId,
+    #[serde(default)]
+    pub webhook_url: Option<String>,
+    #[serde(default)]
+    pub bot_token: Option<String>,
+    #[serde(default)]
+    pub channel_id: Option<String>,
+    /// Overrides the webhook's / bot's display name. Omit to keep theirs.
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default = "defaults::discord_timeout_seconds")]
     pub timeout_seconds: u64,
 }
 
@@ -253,6 +277,10 @@ mod defaults {
     }
 
     pub fn slack_timeout_seconds() -> u64 {
+        10
+    }
+
+    pub fn discord_timeout_seconds() -> u64 {
         10
     }
 

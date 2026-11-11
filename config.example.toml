@@ -102,6 +102,22 @@ bot_auth_token = "xoxb-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 channel = "CXXXXXXXXX"
 timeout_seconds = 10
 
+# Discord: on-call channel. Either a channel webhook...
+[[sinks]]
+type = "discord"
+id = "oncall-discord"
+webhook_url = "https://discord.com/api/webhooks/000000000000000000/REPLACE_ME"
+# HTTP timeout for the webhook POST, in seconds.
+timeout_seconds = 10
+
+# ...or a bot token plus a channel id. Mutually exclusive with webhook_url.
+# [[sinks]]
+# type = "discord"
+# id = "oncall-discord-bot"
+# bot_token = "REPLACE_ME"
+# channel_id = "000000000000000000"
+# timeout_seconds = 10
+
 [[sinks]]
 type = "betterstack"
 id = "betterstack"
