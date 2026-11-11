@@ -188,9 +188,6 @@ pub struct DiscordConfig {
     pub bot_token: Option<String>,
     #[serde(default)]
     pub channel_id: Option<String>,
-    /// Overrides the webhook's / bot's display name. Omit to keep theirs.
-    #[serde(default)]
-    pub username: Option<String>,
     #[serde(default = "defaults::discord_timeout_seconds")]
     pub timeout_seconds: u64,
 }
@@ -205,7 +202,6 @@ impl std::fmt::Debug for DiscordConfig {
             .field("webhook_url", &redacted(&self.webhook_url))
             .field("bot_token", &redacted(&self.bot_token))
             .field("channel_id", &self.channel_id)
-            .field("username", &self.username)
             .field("timeout_seconds", &self.timeout_seconds)
             .finish()
     }

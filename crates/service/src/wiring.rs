@@ -124,7 +124,6 @@ fn build_discord(cfg: &DiscordConfig) -> Result<DiscordSink, WiringError> {
         cfg.webhook_url.clone(),
         cfg.bot_token.clone(),
         cfg.channel_id.clone(),
-        cfg.username.clone(),
         cfg.timeout_seconds,
     )
     .map_err(|source| WiringError::SinkBuild {

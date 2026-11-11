@@ -10,7 +10,7 @@ use chrono::SecondsFormat;
 use domain::alert::{Alert, Severity};
 use domain::sinks::SinkId;
 use parking_lot::Mutex;
-use reqwest::header::RETRY_AFTER;
+use reqwest::header::{HeaderMap, RETRY_AFTER};
 use reqwest::{Client as HttpClient, StatusCode};
 use serde::Serialize;
 use std::time::{Duration, Instant};
@@ -35,8 +35,6 @@ pub struct DiscordSink {
     pub id: SinkId,
     pub http_client: HttpClient,
     endpoint: Endpoint,
-    /// Overrides the webhook's / bot's display name when set.
-    username: Option<String>,
     /// Discord's rate-limit deadline; posts before it are deferred, not attempted.
     retry_at: Mutex<Option<Instant>>,
 }
@@ -126,7 +124,6 @@ impl DiscordSink {
         webhook_url: Option<String>,
         bot_token: Option<String>,
         channel_id: Option<String>,
-        username: Option<String>,
         timeout_seconds: u64,
     ) -> Result<Self, AlertSinkError> {
         let endpoint = match (webhook_url, bot_token, channel_id) {
@@ -174,7 +171,6 @@ impl DiscordSink {
             id,
             http_client,
             endpoint,
-            username,
             retry_at: Mutex::new(None),
         })
     }
@@ -190,7 +186,7 @@ impl DiscordSink {
             return Err(PostError::Deferred);
         }
 
-        let payload = DiscordPayload::from_alert(self.username.as_deref(), alert);
+        let payload = DiscordPayload::from_alert(alert);
         let mut attempt = 0;
 
         loop {
@@ -213,12 +209,8 @@ impl DiscordSink {
                 // Discord answers a webhook post with 204 No Content and a bot
                 // post with 200; anything else is a failure.
                 if status == StatusCode::TOO_MANY_REQUESTS {
-                    let limit = parse_rate_limit(resp).await;
-                    let err = AlertSinkError::DiscordSinkError(format!(
-                        "discord rate limited (global={})",
-                        limit.global
-                    ));
-                    return Err((err, true, Some(limit.retry_after)));
+                    let err = AlertSinkError::DiscordSinkError("discord rate limited".into());
+                    return Err((err, true, Some(retry_after(resp.headers()))));
                 }
 
                 if status.is_server_error() {
@@ -283,49 +275,16 @@ fn discord_err(what: &str, e: reqwest::Error) -> AlertSinkError {
     ))
 }
 
-/// Discord's rate-limit hint: how long to wait, and whether the limit is
-/// account-wide rather than per-webhook.
-struct RateLimit {
-    retry_after: Duration,
-    global: bool,
-}
-
-/// Reads the retry hint from a 429 response. Discord reports it in the body as
-/// `retry_after` (seconds, fractional) and mirrors it in the `Retry-After` and
-/// `X-RateLimit-Reset-After` headers.
-async fn parse_rate_limit(resp: reqwest::Response) -> RateLimit {
-    let header_retry_after = resp
-        .headers()
+/// How long a 429 asks us to wait: Discord's `Retry-After` header, in seconds
+/// (may be fractional). 1s when it is missing or unusable.
+fn retry_after(headers: &HeaderMap) -> Duration {
+    headers
         .get(RETRY_AFTER)
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.trim().parse::<f64>().ok());
-    let header_reset_after = resp
-        .headers()
-        .get("x-ratelimit-reset-after")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.trim().parse::<f64>().ok());
-    let global = resp
-        .headers()
-        .get("x-ratelimit-global")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.eq_ignore_ascii_case("true"));
-
-    let body = resp.text().await.unwrap_or_default();
-    let body_retry_after = serde_json::from_str::<serde_json::Value>(&body)
-        .ok()
-        .and_then(|v| v.get("retry_after").and_then(serde_json::Value::as_f64));
-
-    let secs = body_retry_after
-        .or(header_retry_after)
-        .or(header_reset_after)
-        .unwrap_or(1.0)
-        .max(0.0);
-
-    RateLimit {
-        // `try_` so an absurd hint (e.g. `inf`) can't panic the sink.
-        retry_after: Duration::try_from_secs_f64(secs).unwrap_or(Duration::from_secs(1)),
-        global,
-    }
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        // `try_` rejects negative and non-finite values instead of panicking.
+        .and_then(|secs| Duration::try_from_secs_f64(secs).ok())
+        .unwrap_or(Duration::from_secs(1))
 }
 
 #[async_trait]
@@ -361,9 +320,7 @@ impl AlertSink for DiscordSink {
 }
 
 #[derive(Serialize)]
-struct DiscordPayload<'a> {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    username: Option<&'a str>,
+struct DiscordPayload {
     /// Notification summary: Discord pushes this to the client's tray and
     /// shows it above the embed.
     content: String,
@@ -404,15 +361,14 @@ struct DiscordFooter {
     text: String,
 }
 
-impl<'a> DiscordPayload<'a> {
-    fn from_alert(username: Option<&'a str>, a: &Alert) -> Self {
+impl DiscordPayload {
+    fn from_alert(a: &Alert) -> Self {
         let content = truncate(
             &format!("{} {}", severity_emoji(a.severity), a.rule.name),
             CONTENT_LIMIT,
         );
 
         Self {
-            username,
             content,
             embeds: vec![build_embed(a)],
             allowed_mentions: AllowedMentions { parse: Vec::new() },
@@ -577,7 +533,6 @@ mod tests {
             id: SinkId::new("test-discord"),
             http_client: HttpClient::new(),
             endpoint: Endpoint::webhook(url).unwrap(),
-            username: None,
             retry_at: Mutex::new(None),
         }
     }
@@ -624,7 +579,7 @@ mod tests {
     #[tokio::test]
     async fn defers_when_discord_rate_limits() {
         let (url, _request) = mock_server(
-            "HTTP/1.1 429 Too Many Requests",
+            "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 30",
             r#"{"message":"rate limited","retry_after":30.0,"global":false}"#,
         )
         .await;
@@ -679,7 +634,7 @@ mod tests {
 
     #[test]
     fn requires_a_credential() {
-        let err = DiscordSink::build(SinkId::new("test-discord"), None, None, None, None, 10)
+        let err = DiscordSink::build(SinkId::new("test-discord"), None, None, None, 10)
             .err()
             .expect("build should reject a sink without a credential");
         assert!(err.to_string().contains("needs a webhook_url"));
