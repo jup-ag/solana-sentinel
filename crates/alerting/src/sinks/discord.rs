@@ -221,8 +221,8 @@ impl DiscordSink {
 
                 let status = resp.status();
 
-                // Discord answers a webhook post with 204 No Content and a bot
-                // post with 200; anything else is a failure.
+                // Discord answers 200 with the created message, for a bot post and
+                // for a webhook post (sent with `wait=true`); anything else is a failure.
                 if status == StatusCode::TOO_MANY_REQUESTS {
                     let err = AlertSinkError::DiscordSinkError("discord rate limited".into());
                     return Err((err, true, Some(retry_after(resp.headers()))));
@@ -296,8 +296,8 @@ fn discord_err(what: &str, e: reqwest::Error) -> AlertSinkError {
     ))
 }
 
-/// How long a 429 asks us to wait: Discord's `Retry-After` header, in seconds
-/// (may be fractional). 1s when it is missing or unusable.
+/// How long a 429 asks us to wait: Discord's `Retry-After` header, in whole
+/// seconds rounded up. 1s when it is missing or unusable.
 fn retry_after(headers: &HeaderMap) -> Duration {
     headers
         .get(RETRY_AFTER)
