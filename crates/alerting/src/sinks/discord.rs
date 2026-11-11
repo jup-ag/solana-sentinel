@@ -63,11 +63,27 @@ impl Endpoint {
         if url.scheme() != "https" {
             return Err("webhook_url must be an https URL".into());
         }
-        let token = url
+        // Only the native `.../webhooks/{id}/{token}` shape: the `/slack` and `/github`
+        // variants expect other payloads, and the token must be known to redact it.
+        let segments: Vec<&str> = url
             .path_segments()
-            .and_then(|mut s| s.next_back())
-            .unwrap_or_default()
-            .to_string();
+            .map(Iterator::collect)
+            .unwrap_or_default();
+        let token = match segments.as_slice() {
+            [.., "webhooks", id, token]
+                if !id.is_empty()
+                    && id.bytes().all(|b| b.is_ascii_digit())
+                    && !token.is_empty() =>
+            {
+                (*token).to_string()
+            }
+            _ => {
+                return Err(
+                    "webhook_url must look like https://discord.com/api/webhooks/{id}/{token}"
+                        .into(),
+                )
+            }
+        };
         let params: Vec<(String, String)> = url
             .query_pairs()
             .filter(|(k, _)| k != "wait")
