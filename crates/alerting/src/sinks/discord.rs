@@ -29,7 +29,6 @@ const FIELD_NAME_LIMIT: usize = 256;
 const FIELD_VALUE_LIMIT: usize = 1024;
 /// Combined title + description + fields + footer budget for one embed.
 const EMBED_TOTAL_LIMIT: usize = 6000;
-const CONTENT_LIMIT: usize = 2000;
 
 pub struct DiscordSink {
     id: SinkId,
@@ -357,10 +356,9 @@ struct DiscordFooter {
 
 impl DiscordPayload {
     fn from_alert(a: &Alert) -> Self {
-        let content = truncate(
-            &format!("{} {}", severity_emoji(a.severity), a.rule.name),
-            CONTENT_LIMIT,
-        );
+        // Rule names are short compile-time constants, well under Discord's
+        // 2000-char content limit.
+        let content = format!("{} {}", severity_emoji(a.severity), a.rule.name);
 
         Self {
             content,
