@@ -219,10 +219,16 @@ impl DiscordSink {
                     // "Missing Access", ...), which is worth more than the status.
                     // Redact before truncating, so a cut can't split the token.
                     let body = resp.text().await.unwrap_or_default();
-                    let err = AlertSinkError::DiscordSinkError(format!(
+                    let msg = format!(
                         "discord http {status}: {}",
                         truncate(&self.endpoint.redact(body.trim()), 300)
-                    ));
+                    );
+                    let err = if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+                    {
+                        AlertSinkError::DiscordRejected(msg)
+                    } else {
+                        AlertSinkError::DiscordSinkError(msg)
+                    };
                     return Err((err, false, None));
                 }
 
@@ -297,12 +303,19 @@ impl AlertSink for DiscordSink {
         Ok(())
     }
 
-    // One message per alert, so each succeeds or fails on its own.
+    // One message per alert, so each succeeds or fails on its own. A 401/403 fails
+    // the rest of the batch without sending it: the credential is bad for all of
+    // them, and Discord bans an IP that makes 10,000 401/403/429 requests in 10 min.
     async fn send_each(&self, alerts: &[Alert], out: &mut [Delivery]) {
-        for (alert, slot) in alerts.iter().zip(out.iter_mut()) {
-            *slot = match self.post(alert).await {
+        for (i, alert) in alerts.iter().enumerate() {
+            out[i] = match self.post(alert).await {
                 Ok(()) => Delivery::Delivered,
                 Err(PostError::Deferred) => Delivery::Deferred,
+                Err(PostError::Failed(e @ AlertSinkError::DiscordRejected(_))) => {
+                    warn!(sink = %self.id, error = %e, skipped = alerts.len() - i - 1, "Discord rejected the credential; failing the rest of the batch");
+                    out[i..].fill(Delivery::Failed);
+                    return;
+                }
                 Err(PostError::Failed(e)) => {
                     warn!(sink = %self.id, rule = alert.rule.name, error = %e, "Discord alert not delivered");
                     Delivery::Failed
