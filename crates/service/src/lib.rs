@@ -21,6 +21,7 @@ use anyhow::Context;
 use data_source::rpc::build_rpc_client;
 use observability::slot_tracker::SlotTracker;
 use observability::{prometheus, run_observability_stack};
+use solana_sentinel::reactor::spawn_alert_tap;
 use solana_sentinel::{ProgramSpec, ValidatedProgram};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -112,24 +113,31 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
         &tracker,
     );
 
-    // alerts channel to send alerts from the consumer service to the alerting service(clickhouse, slack and betterstack sinks)
+    // Rules send to `rules_tx`; the alert tap hands each alert to the reactors, then forwards it
+    // to the alerting service (cooldown / fleet gates, sinks) on `alerts_tx`.
+    let (rules_tx, rules_rx) = mpsc::channel(1024);
     let (alerts_tx, alerts_rx) = mpsc::channel(1024);
 
     // start the consumer service which starts processing messages from grpc + bootstraps any cached state from the rpc
     let consumer_service = ConsumerService::new(
         &config,
         programs,
-        alerts_tx.clone(),
+        // Kept here too, so the channel stays open for the whole run as before.
+        rules_tx.clone(),
         cancel_token.clone(),
         Arc::clone(&rpc),
         slot_tracker.clone(),
         pod_id.clone(),
     );
     // Bootstrap can take minutes of RPC; a shutdown during it skips straight to the drain.
-    tokio::select! {
+    let reactors = tokio::select! {
         started = consumer_service.start(&tracker) => started.context("Failed to start consumer")?,
-        () = cancel_token.cancelled() => warn!("Shutdown requested during startup"),
-    }
+        () = cancel_token.cancelled() => {
+            warn!("Shutdown requested during startup");
+            Vec::new()
+        }
+    };
+    spawn_alert_tap(reactors, rules_rx, alerts_tx, &tracker);
 
     // Start the alerting service and send alerts to the clickhouse and slack sinks
     let alerting_service =
@@ -141,6 +149,9 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
     let reason = wait_for_shutdown(&cancel_token, &signalled).await;
 
     cancel_token.cancel();
+    // The alert tap runs until every rule sender is gone; this one would keep it (and so
+    // `tracker.wait()`) alive forever once the pipelines have stopped.
+    drop(rules_tx);
     tracker.close();
     tracker.wait().await;
 

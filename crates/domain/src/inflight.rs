@@ -8,7 +8,7 @@ static PENDING: Mutex<BTreeMap<u64, usize>> = Mutex::new(BTreeMap::new());
 
 /// Holds its slot pending until the last clone drops (delivered, suppressed or given up).
 #[derive(Debug, Clone)]
-pub struct SlotHold(#[allow(dead_code)] Arc<Hold>);
+pub struct SlotHold(Arc<Hold>);
 
 #[derive(Debug)]
 struct Hold(u64);
@@ -17,6 +17,11 @@ impl SlotHold {
     pub fn new(slot: u64) -> Self {
         *pending().entry(slot).or_default() += 1;
         Self(Arc::new(Hold(slot)))
+    }
+
+    /// The slot this hold keeps pending: the stream slot that raised the alert.
+    pub fn slot(&self) -> u64 {
+        self.0 .0
     }
 }
 
