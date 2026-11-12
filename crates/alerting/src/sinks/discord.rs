@@ -154,13 +154,15 @@ impl Endpoint {
 /// A post Discord refused for now; `Deferred` carries no failed attempt.
 enum PostError {
     Failed(AlertSinkError),
+    /// 401/403: the credential is bad for every alert.
+    Rejected(AlertSinkError),
     Deferred,
 }
 
 impl From<PostError> for AlertSinkError {
     fn from(e: PostError) -> Self {
         match e {
-            PostError::Failed(e) => e,
+            PostError::Failed(e) | PostError::Rejected(e) => e,
             PostError::Deferred => Self::DiscordSinkError("rate limited".into()),
         }
     }
@@ -225,7 +227,7 @@ impl DiscordSink {
                     .json(&payload)
                     .send()
                     .await
-                    .map_err(|e| (discord_err("discord request failed", e), true, None))?;
+                    .map_err(|e| (discord_err("discord request failed", e), None))?;
 
                 let status = resp.status();
 
@@ -233,13 +235,12 @@ impl DiscordSink {
                 // for a webhook post (sent with `wait=true`); anything else is a failure.
                 if status == StatusCode::TOO_MANY_REQUESTS {
                     let err = AlertSinkError::DiscordSinkError("discord rate limited".into());
-                    return Err((err, true, Some(retry_after(resp.headers()))));
+                    return Err((err, Some(retry_after(resp.headers()))));
                 }
 
                 if status.is_server_error() {
                     return Err((
                         AlertSinkError::DiscordSinkError(format!("discord http {status}")),
-                        true,
                         None,
                     ));
                 }
@@ -253,22 +254,22 @@ impl DiscordSink {
                         "discord http {status}: {}",
                         truncate(&self.endpoint.redact(body.trim()), 300)
                     );
-                    let err = if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
-                    {
-                        AlertSinkError::DiscordRejected(msg)
-                    } else {
-                        AlertSinkError::DiscordSinkError(msg)
-                    };
-                    return Err((err, false, None));
+                    let err = AlertSinkError::DiscordSinkError(msg);
+                    return Ok(Err(match status {
+                        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
+                            PostError::Rejected(err)
+                        }
+                        _ => PostError::Failed(err),
+                    }));
                 }
 
-                Ok(())
+                Ok(Ok(()))
             }
             .await;
 
             match result {
-                Ok(()) => return Ok(()),
-                Err((e, retryable, retry_after)) => {
+                Ok(done) => return done,
+                Err((e, retry_after)) => {
                     if let Some(wait) = retry_after {
                         if wait > MAX_BACKOFF || attempt >= MAX_ATTEMPTS {
                             warn!(error = %e, retry_after_ms = wait.as_millis(), "Discord rate limited; deferring");
@@ -276,7 +277,7 @@ impl DiscordSink {
                             return Err(PostError::Deferred);
                         }
                     }
-                    if !retryable || attempt >= MAX_ATTEMPTS {
+                    if attempt >= MAX_ATTEMPTS {
                         return Err(PostError::Failed(e));
                     }
                     let backoff =
@@ -341,7 +342,7 @@ impl AlertSink for DiscordSink {
             out[i] = match self.post(alert).await {
                 Ok(()) => Delivery::Delivered,
                 Err(PostError::Deferred) => Delivery::Deferred,
-                Err(PostError::Failed(e @ AlertSinkError::DiscordRejected(_))) => {
+                Err(PostError::Rejected(e)) => {
                     warn!(sink = %self.id, error = %e, skipped = alerts.len() - i - 1, "Discord rejected the credential; failing the rest of the batch");
                     out[i..].fill(Delivery::Failed);
                     return;

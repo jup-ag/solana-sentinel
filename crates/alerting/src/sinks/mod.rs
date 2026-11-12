@@ -19,8 +19,6 @@ pub enum AlertSinkError {
     BetterStackSinkError(String),
     #[error("discord sink error: {0}")]
     DiscordSinkError(String),
-    #[error("discord rejected the credential: {0}")]
-    DiscordRejected(String),
 }
 
 #[async_trait]
