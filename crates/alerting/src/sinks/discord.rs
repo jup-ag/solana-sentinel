@@ -61,12 +61,23 @@ impl Endpoint {
     ) -> Result<Self, AlertSinkError> {
         match (webhook_url, bot_token, channel_id) {
             (Some(url), None, _) => Self::webhook(&url),
-            (None, Some(token), Some(channel_id)) => Ok(Self::Bot { token, channel_id }),
+            (None, Some(token), Some(channel_id)) => Self::bot(&token, channel_id),
             (Some(_), Some(_), _) => Err("set either webhook_url or bot_token, not both".into()),
             (None, None, _) => Err("needs a webhook_url, or a bot_token and a channel_id".into()),
             (None, Some(_), None) => Err("bot_token requires a channel_id".into()),
         }
         .map_err(AlertSinkError::DiscordSinkError)
+    }
+
+    fn bot(token: &str, channel_id: String) -> Result<Self, String> {
+        let token = token.trim().to_string();
+        if token.is_empty() {
+            return Err("bot_token is empty".into());
+        }
+        if channel_id.is_empty() || !channel_id.bytes().all(|b| b.is_ascii_digit()) {
+            return Err("channel_id must be a numeric Discord channel id".into());
+        }
+        Ok(Self::Bot { token, channel_id })
     }
 
     /// An https webhook that posts with `wait=true`: without it Discord answers
