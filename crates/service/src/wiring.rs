@@ -1,7 +1,9 @@
 //! Translates a parsed [`SentinelConfig`] into a fully wired alerting
 //! [`Router`] and [`CooldownGate`], validating along the way.
 
-use crate::config::service::{BetterstackSinkConfig, ClickhouseConfig, SinkConfig, SlackConfig};
+use crate::config::service::{
+    BetterstackSinkConfig, ClickhouseConfig, DiscordConfig, SinkConfig, SlackConfig,
+};
 use crate::config::{ProgramRules, SentinelConfig};
 use alerting::cooldown_gate::CooldownGate;
 use alerting::fleet_gate::FleetGate;
@@ -9,6 +11,7 @@ use alerting::local_gate::LocalGate;
 use alerting::router::Router;
 use alerting::sinks::betterstack::BetterstackSink;
 use alerting::sinks::clickhouse::ClickhouseSink;
+use alerting::sinks::discord::DiscordSink;
 use alerting::sinks::slack::SlackSink;
 use alerting::sinks::stdout::StdoutSink;
 use alerting::sinks::{AlertSink, AlertSinkError};
@@ -83,6 +86,7 @@ fn build_sinks(cfgs: &[SinkConfig]) -> Result<HashMap<SinkId, Box<dyn AlertSink>
         let sink: Box<dyn AlertSink> = match cfg {
             SinkConfig::Clickhouse(c) => Box::new(build_clickhouse(c)),
             SinkConfig::Slack(s) => Box::new(build_slack(s)?),
+            SinkConfig::Discord(d) => Box::new(build_discord(d)?),
             SinkConfig::Betterstack(b) => Box::new(build_betterstack(b)?),
             SinkConfig::Stdout(s) => Box::new(StdoutSink::new(s.id.clone())),
         };
@@ -106,6 +110,20 @@ fn build_slack(cfg: &SlackConfig) -> Result<SlackSink, WiringError> {
         cfg.id.clone(),
         cfg.bot_auth_token.clone(),
         cfg.channel.clone(),
+        cfg.timeout_seconds,
+    )
+    .map_err(|source| WiringError::SinkBuild {
+        id: cfg.id.clone(),
+        source,
+    })
+}
+
+fn build_discord(cfg: &DiscordConfig) -> Result<DiscordSink, WiringError> {
+    DiscordSink::build(
+        cfg.id.clone(),
+        cfg.webhook_url.clone(),
+        cfg.bot_token.clone(),
+        cfg.channel_id.clone(),
         cfg.timeout_seconds,
     )
     .map_err(|source| WiringError::SinkBuild {

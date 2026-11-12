@@ -129,6 +129,7 @@ pub struct RpcConfig {
 pub enum SinkConfig {
     Clickhouse(ClickhouseConfig),
     Slack(SlackConfig),
+    Discord(DiscordConfig),
     Betterstack(BetterstackSinkConfig),
     /// JSON lines on stdout; for local runs.
     Stdout(StdoutSinkConfig),
@@ -139,6 +140,7 @@ impl SinkConfig {
         match self {
             Self::Clickhouse(c) => &c.id,
             Self::Slack(s) => &s.id,
+            Self::Discord(d) => &d.id,
             Self::Betterstack(b) => &b.id,
             Self::Stdout(s) => &s.id,
         }
@@ -169,6 +171,40 @@ pub struct SlackConfig {
     pub channel: String,
     #[serde(default = "defaults::slack_timeout_seconds")]
     pub timeout_seconds: u64,
+}
+
+/// Discord: a channel that receives the alert.
+///
+/// Two ways to authenticate, mutually exclusive:
+///   - `webhook_url`: a channel webhook (Server Settings → Integrations →
+///     Webhooks). The token is part of the URL, so nothing else is needed.
+///   - `bot_token` + `channel_id`: a bot token and the channel to post into.
+#[derive(Clone, Deserialize)]
+pub struct DiscordConfig {
+    pub id: SinkId,
+    #[serde(default)]
+    pub webhook_url: Option<String>,
+    #[serde(default)]
+    pub bot_token: Option<String>,
+    #[serde(default)]
+    pub channel_id: Option<String>,
+    #[serde(default = "defaults::discord_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+// Hand-written so a Debug-printed config never shows the webhook URL (which
+// embeds its token) or the bot token.
+impl std::fmt::Debug for DiscordConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let redacted = |s: &Option<String>| s.as_ref().map(|_| "<redacted>");
+        f.debug_struct("DiscordConfig")
+            .field("id", &self.id)
+            .field("webhook_url", &redacted(&self.webhook_url))
+            .field("bot_token", &redacted(&self.bot_token))
+            .field("channel_id", &self.channel_id)
+            .field("timeout_seconds", &self.timeout_seconds)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -253,6 +289,10 @@ mod defaults {
     }
 
     pub fn slack_timeout_seconds() -> u64 {
+        10
+    }
+
+    pub fn discord_timeout_seconds() -> u64 {
         10
     }
 

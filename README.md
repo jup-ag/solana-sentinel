@@ -113,7 +113,7 @@ async fn main() -> anyhow::Result<()> {
 
 **Data sources** (`[data_source] type`): `yellowstone_grpc` (default), `websocket` or `kafka`.
 
-**Sinks** (`[[sinks]]`): `stdout`, `slack`, `betterstack`, `clickhouse`.
+**Sinks** (`[[sinks]]`): `stdout`, `slack`, `discord`, `betterstack`, `clickhouse`.
 
 **Cooldown gate**: a per-node Redis gate followed by a fleet-wide Redis gate. The fleet gate runs in memory when `redis_fleet_url` is unset.
 
