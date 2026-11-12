@@ -35,6 +35,8 @@ pub struct SlackSink {
     pub http_client: HttpClient,
     pub bot_token: String,
     pub channel: String,
+    /// Where canaries go; `None` acknowledges them without posting.
+    pub canary_channel: Option<String>,
     /// Slack's `Retry-After` deadline; posts before it are deferred, not attempted.
     retry_at: Mutex<Option<Instant>>,
 }
@@ -71,8 +73,16 @@ impl SlackSink {
             http_client,
             bot_token,
             channel,
+            canary_channel: None,
             retry_at: Mutex::new(None),
         })
+    }
+
+    /// Post canaries to this channel (a dedicated, muted one) instead of dropping them.
+    #[must_use]
+    pub fn with_canary_channel(mut self, channel: Option<String>) -> Self {
+        self.canary_channel = channel;
+        self
     }
 
     async fn post(&self, alert: &Alert) -> Result<(), PostError> {
@@ -81,10 +91,19 @@ impl SlackSink {
         // Longest wait slept in place; a longer Retry-After defers the alert to a later flush.
         const MAX_BACKOFF: Duration = Duration::from_secs(5);
 
+        // Canaries prove the path up to this sink; they never reach the incident channel.
+        let channel = if alert.is_canary() {
+            match &self.canary_channel {
+                Some(channel) => channel,
+                None => return Ok(()),
+            }
+        } else {
+            &self.channel
+        };
         if self.retry_at.lock().is_some_and(|at| Instant::now() < at) {
             return Err(PostError::Deferred);
         }
-        let payload = SlackPayload::from_alert(&self.channel, alert);
+        let payload = SlackPayload::from_alert(channel, alert);
         let mut attempt = 0;
 
         loop {
@@ -893,5 +912,27 @@ fn severity_color(s: Severity) -> &'static str {
         Severity::Info => "#36a64f",     // green
         Severity::Warn => "#daa038",     // amber
         Severity::Critical => "#d50200", // red
+    }
+}
+
+#[cfg(test)]
+mod canary_tests {
+    use super::*;
+    use domain::canary::CANARY;
+    use domain::programs::Program;
+    use domain::rules::RuleId;
+
+    /// Without a canary channel a canary is acknowledged and never posted (the bogus token
+    /// would fail any real post).
+    #[tokio::test]
+    async fn canary_is_dropped_without_a_canary_channel() {
+        let sink = SlackSink::build("slack".into(), "xoxb-bogus".into(), "C0".into(), 1).unwrap();
+        let canary = Alert::for_rule(RuleId::new(Program::new("health"), "canary"))
+            .meta(CANARY, "true")
+            .build();
+        let mut out = [Delivery::Pending];
+        sink.send_each(std::slice::from_ref(&canary), &mut out)
+            .await;
+        assert_eq!(out, [Delivery::Delivered]);
     }
 }

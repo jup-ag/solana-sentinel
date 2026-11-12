@@ -221,6 +221,10 @@ impl AlertSink for BetterstackSink {
     }
 
     async fn send(&self, alert: &Alert) -> Result<(), AlertSinkError> {
+        // A canary must never open an incident; reaching this sink is the whole probe.
+        if alert.is_canary() {
+            return Ok(());
+        }
         let dedup_key = self.dedup_key(alert);
         // Fail open: a failed or timed-out lookup still creates the incident.
         let lookup = tokio::time::timeout(
@@ -282,5 +286,30 @@ impl AlertSink for BetterstackSink {
                 }
             };
         }
+    }
+}
+
+#[cfg(test)]
+mod canary_tests {
+    use super::*;
+    use domain::canary::CANARY;
+    use domain::programs::Program;
+    use domain::rules::RuleId;
+
+    /// A canary opens no incident: the unreachable API is never called.
+    #[tokio::test]
+    async fn canary_opens_no_incident() {
+        let sink = BetterstackSink::build(
+            "betterstack".into(),
+            "http://127.0.0.1:9/api/v2/incidents",
+            "token".into(),
+            "policy".into(),
+            "me@example.com".into(),
+        )
+        .unwrap();
+        let canary = Alert::for_rule(RuleId::new(Program::new("health"), "canary"))
+            .meta(CANARY, "true")
+            .build();
+        sink.send(&canary).await.unwrap();
     }
 }
