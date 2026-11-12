@@ -2,6 +2,7 @@
 //! I/O; `build` runs each rule's `build` + `bootstrap` later.
 
 use crate::deps::Deps;
+use crate::dynamic::DynamicScope;
 use crate::rule::{BuiltPollRule, BuiltStreamRule, PollRule, RuleConfigError, StreamRule};
 use crate::subscription::Subscription;
 use crate::{BootstrapCtx, RawRuleMap};
@@ -50,12 +51,14 @@ fn validate_entries<V>(
 /// Rules of one stream pipeline. `register` only accepts rules whose event type matches.
 pub struct StreamRules<Ev> {
     entries: Vec<Entry<ValidatedStreamRule<Ev>>>,
+    dynamic: DynamicScope,
 }
 
 impl<Ev> Default for StreamRules<Ev> {
     fn default() -> Self {
         Self {
             entries: Vec::new(),
+            dynamic: DynamicScope::All,
         }
     }
 }
@@ -74,6 +77,14 @@ impl<Ev: Send + Sync + 'static> StreamRules<Ev> {
         self
     }
 
+    /// Which parts of the program's dynamic subscription this pipeline takes; default
+    /// [`DynamicScope::All`].
+    #[must_use]
+    pub fn dynamic(mut self, scope: DynamicScope) -> Self {
+        self.dynamic = scope;
+        self
+    }
+
     pub fn ids(&self) -> Vec<RuleId> {
         self.entries.iter().map(|e| e.id).collect()
     }
@@ -84,7 +95,11 @@ impl<Ev: Send + Sync + 'static> StreamRules<Ev> {
         raw: &RawRuleMap,
     ) -> Result<ValidatedStream<Ev>, RuleConfigError> {
         let rules = validate_entries(&self.entries, program, raw)?;
-        Ok(ValidatedStream { program, rules })
+        Ok(ValidatedStream {
+            program,
+            rules,
+            dynamic: self.dynamic.clone(),
+        })
     }
 }
 
@@ -115,6 +130,7 @@ pub struct ValidatedStreamRule<Ev> {
 pub struct ValidatedStream<Ev> {
     program: Program,
     rules: Vec<ValidatedStreamRule<Ev>>,
+    dynamic: DynamicScope,
 }
 
 impl<Ev: Send + Sync + 'static> ValidatedStream<Ev> {
@@ -124,6 +140,11 @@ impl<Ev: Send + Sync + 'static> ValidatedStream<Ev> {
 
     pub fn ids(&self) -> Vec<RuleId> {
         self.rules.iter().map(|r| r.id).collect()
+    }
+
+    /// The parts of the program's dynamic subscription this pipeline takes.
+    pub fn dynamic_scope(&self) -> &DynamicScope {
+        &self.dynamic
     }
 
     /// Union over the configured rules' static subscriptions.
