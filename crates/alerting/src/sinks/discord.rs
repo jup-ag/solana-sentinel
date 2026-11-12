@@ -423,7 +423,7 @@ fn build_embed(a: &Alert) -> DiscordEmbed {
     );
 
     // Discord caps the whole embed (title, description, fields and footer) at
-    // 6000 chars, so fields are added only while they fit in the remaining budget.
+    // 6000 chars, so a field is added only if it fits in the remaining budget.
     let mut used = title.chars().count() + description.chars().count() + footer.chars().count();
     let mut fields = Vec::new();
 
@@ -439,7 +439,7 @@ fn build_embed(a: &Alert) -> DiscordEmbed {
         }
         let cost = name.chars().count() + value.chars().count();
         if used + cost > EMBED_TOTAL_LIMIT {
-            break;
+            continue;
         }
         used += cost;
         fields.push(DiscordField {
