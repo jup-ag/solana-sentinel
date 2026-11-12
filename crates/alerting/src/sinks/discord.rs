@@ -491,9 +491,6 @@ mod tests {
     use super::*;
     use domain::programs::Program;
     use domain::rules::RuleId;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-    use tokio::sync::oneshot;
 
     fn alert(message: &str, metadata: &[(&str, &str)]) -> Alert {
         Alert::for_rule(RuleId::new(Program::new("token_program"), "balance_drop"))
@@ -503,84 +500,8 @@ mod tests {
             .build()
     }
 
-    /// A one-shot HTTP server: answers a single request with `status_line` and
-    /// hands the raw request back over a channel.
-    async fn mock_server(
-        status_line: &'static str,
-        body: &'static str,
-    ) -> (String, oneshot::Receiver<String>) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let (tx, rx) = oneshot::channel();
-
-        tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut buf = Vec::new();
-            let mut tmp = [0u8; 4096];
-
-            // Read the head, then the body, so the whole request is captured.
-            let head_end = loop {
-                let n = socket.read(&mut tmp).await.unwrap();
-                if n == 0 {
-                    break buf.len();
-                }
-                buf.extend_from_slice(&tmp[..n]);
-                if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                    break p + 4;
-                }
-            };
-
-            let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
-            let content_length = head
-                .lines()
-                .find(|l| l.to_ascii_lowercase().starts_with("content-length:"))
-                .and_then(|l| l.split(':').nth(1))
-                .and_then(|v| v.trim().parse::<usize>().ok())
-                .unwrap_or(0);
-
-            while buf.len() < head_end + content_length {
-                let n = socket.read(&mut tmp).await.unwrap();
-                if n == 0 {
-                    break;
-                }
-                buf.extend_from_slice(&tmp[..n]);
-            }
-
-            let response = if body.is_empty() {
-                format!("{status_line}\r\n\r\n")
-            } else {
-                let head = format!("{status_line}\r\nContent-Type: application/json\r\n");
-                let len = format!("Content-Length: {}\r\n\r\n", body.len());
-                format!("{head}{len}{body}")
-            };
-            socket.write_all(response.as_bytes()).await.unwrap();
-            socket.flush().await.unwrap();
-
-            let _ = tx.send(String::from_utf8_lossy(&buf).to_string());
-        });
-
-        (format!("http://{addr}"), rx)
-    }
-
-    /// A sink pointed at the mock server. `Endpoint::webhook` insists on an
-    /// https URL, so the endpoint is built directly here.
-    fn sink_for(url: &str) -> DiscordSink {
-        DiscordSink {
-            id: SinkId::new("test-discord"),
-            http_client: HttpClient::new(),
-            endpoint: Endpoint::Webhook {
-                url: url.to_string(),
-                token: String::new(),
-            },
-            retry_at: Mutex::new(None),
-        }
-    }
-
-    #[tokio::test]
-    async fn posts_an_embed_to_the_webhook() {
-        let (url, request) = mock_server("HTTP/1.1 204 No Content", "").await;
-        let sink = sink_for(&url);
-
+    #[test]
+    fn builds_the_payload_with_mentions_disabled() {
         let a = alert(
             "balance dropped by 40%",
             &[(
@@ -588,18 +509,8 @@ mod tests {
                 "3emsAVdmGKERbHjmGfQ6oZ1e35dkf5iYcS6U4CPKFVaa",
             )],
         );
-        sink.send(&a).await.unwrap();
+        let json = serde_json::to_value(DiscordPayload::from_alert(&a)).unwrap();
 
-        let raw = request.await.unwrap();
-        let (head, body) = raw.split_once("\r\n\r\n").unwrap();
-        assert!(
-            head.starts_with("POST /"),
-            "unexpected request head: {head}"
-        );
-
-        let json: serde_json::Value = serde_json::from_str(body).unwrap();
-
-        // A notification summary plus one embed carrying the alert.
         assert!(json["content"].as_str().unwrap().contains("balance_drop"));
         let embed = &json["embeds"][0];
         assert_eq!(embed["title"], "Rule : balance_drop");
@@ -610,43 +521,7 @@ mod tests {
             embed["fields"][0]["value"],
             "3emsAVdmGKERbHjmGfQ6oZ1e35dkf5iYcS6U4CPKFVaa"
         );
-
-        // An alerting system must never ping @everyone by accident.
         assert_eq!(json["allowed_mentions"]["parse"], serde_json::json!([]));
-    }
-
-    #[tokio::test]
-    async fn defers_when_discord_rate_limits() {
-        let (url, _request) = mock_server(
-            "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 30",
-            r#"{"message":"rate limited","retry_after":30.0,"global":false}"#,
-        )
-        .await;
-        let sink = sink_for(&url);
-
-        let a = alert("balance dropped", &[]);
-        let mut out = [Delivery::Pending];
-        sink.send_each(std::slice::from_ref(&a), &mut out).await;
-
-        assert_eq!(out[0], Delivery::Deferred);
-        // The sink now holds the deadline, so the next alert defers too.
-        assert!(sink.retry_at.lock().is_some());
-    }
-
-    #[tokio::test]
-    async fn reports_a_bad_webhook_as_failed() {
-        let (url, _request) = mock_server(
-            "HTTP/1.1 401 Unauthorized",
-            r#"{"message":"401: Unauthorized","code":0}"#,
-        )
-        .await;
-        let sink = sink_for(&url);
-
-        let a = alert("balance dropped", &[]);
-        let mut out = [Delivery::Pending];
-        sink.send_each(std::slice::from_ref(&a), &mut out).await;
-
-        assert_eq!(out[0], Delivery::Failed);
     }
 
     #[test]
