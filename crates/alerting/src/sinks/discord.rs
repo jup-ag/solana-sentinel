@@ -54,6 +54,21 @@ enum Endpoint {
 }
 
 impl Endpoint {
+    fn try_build(
+        webhook_url: Option<String>,
+        bot_token: Option<String>,
+        channel_id: Option<String>,
+    ) -> Result<Self, AlertSinkError> {
+        match (webhook_url, bot_token, channel_id) {
+            (Some(url), None, _) => Self::webhook(&url),
+            (None, Some(token), Some(channel_id)) => Ok(Self::Bot { token, channel_id }),
+            (Some(_), Some(_), _) => Err("set either webhook_url or bot_token, not both".into()),
+            (None, None, _) => Err("needs a webhook_url, or a bot_token and a channel_id".into()),
+            (None, Some(_), None) => Err("bot_token requires a channel_id".into()),
+        }
+        .map_err(AlertSinkError::DiscordSinkError)
+    }
+
     /// An https webhook that posts with `wait=true`: without it Discord answers
     /// 204 before saving the message, and a message that fails to save returns
     /// no error. Other query params (e.g. `thread_id`) are kept.
@@ -144,30 +159,7 @@ impl DiscordSink {
         channel_id: Option<String>,
         timeout_seconds: u64,
     ) -> Result<Self, AlertSinkError> {
-        let endpoint = match (webhook_url, bot_token, channel_id) {
-            (Some(url), None, _) => Endpoint::webhook(&url).map_err(|e| {
-                AlertSinkError::DiscordSinkError(format!("discord sink `{id}`: {e}"))
-            })?,
-            (None, Some(token), Some(channel)) => Endpoint::Bot {
-                token,
-                channel_id: channel,
-            },
-            (Some(_), Some(_), _) => {
-                return Err(AlertSinkError::DiscordSinkError(format!(
-                    "discord sink `{id}`: set either webhook_url or bot_token, not both"
-                )));
-            }
-            (None, None, _) => {
-                return Err(AlertSinkError::DiscordSinkError(format!(
-                    "discord sink `{id}`: needs a webhook_url, or a bot_token and a channel_id"
-                )));
-            }
-            (None, Some(_), None) => {
-                return Err(AlertSinkError::DiscordSinkError(format!(
-                    "discord sink `{id}`: bot_token requires a channel_id"
-                )));
-            }
-        };
+        let endpoint = Endpoint::try_build(webhook_url, bot_token, channel_id)?;
 
         let http_client = HttpClient::builder()
             .timeout(Duration::from_secs(timeout_seconds))
