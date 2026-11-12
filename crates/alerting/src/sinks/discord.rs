@@ -10,7 +10,7 @@ use chrono::SecondsFormat;
 use domain::alert::{Alert, Severity};
 use domain::sinks::SinkId;
 use parking_lot::Mutex;
-use reqwest::header::{HeaderMap, RETRY_AFTER};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, RETRY_AFTER};
 use reqwest::{Client as HttpClient, StatusCode};
 use serde::Serialize;
 use std::time::{Duration, Instant};
@@ -43,12 +43,10 @@ pub struct DiscordSink {
 #[derive(Clone)]
 enum Endpoint {
     /// `token` is the URL's last path segment, kept to redact it from errors.
-    Webhook {
-        url: String,
-        token: String,
-    },
+    Webhook { url: String, token: String },
     Bot {
         token: String,
+        auth: HeaderValue,
         channel_id: String,
     },
 }
@@ -77,7 +75,14 @@ impl Endpoint {
         if channel_id.is_empty() || !channel_id.bytes().all(|b| b.is_ascii_digit()) {
             return Err("channel_id must be a numeric Discord channel id".into());
         }
-        Ok(Self::Bot { token, channel_id })
+        let mut auth = HeaderValue::from_str(&format!("Bot {token}"))
+            .map_err(|_| "bot_token is not a valid header value")?;
+        auth.set_sensitive(true);
+        Ok(Self::Bot {
+            token,
+            auth,
+            channel_id,
+        })
     }
 
     /// An https webhook that posts with `wait=true`: without it Discord answers
@@ -212,8 +217,8 @@ impl DiscordSink {
 
             let result = async {
                 let mut req = self.http_client.post(self.endpoint.url());
-                if let Endpoint::Bot { token, .. } = &self.endpoint {
-                    req = req.header("Authorization", format!("Bot {token}"));
+                if let Endpoint::Bot { auth, .. } = &self.endpoint {
+                    req = req.header(AUTHORIZATION, auth.clone());
                 }
 
                 let resp = req
