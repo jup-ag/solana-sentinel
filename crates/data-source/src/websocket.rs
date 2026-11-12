@@ -34,6 +34,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::str::FromStr;
 use std::time::Duration;
 use tracing::{debug, info, warn};
+use utility::redact::{redact_url, redact_urls};
 use yellowstone_grpc_proto::geyser::subscribe_update::UpdateOneof;
 use yellowstone_grpc_proto::geyser::{SubscribeUpdate, SubscribeUpdateSlot};
 
@@ -93,10 +94,14 @@ impl WebsocketSource {
         } = ctx;
         let commitment = self.commitment()?;
         let client = PubsubClient::new(&self.config.url).await.map_err(|e| {
-            let msg = format!("Failed to connect to PubSub at {}: {e}", self.config.url);
+            let msg = format!(
+                "Failed to connect to PubSub at {}: {}",
+                redact_url(&self.config.url),
+                redact_urls(&e.to_string())
+            );
             shipstern::Error::Other(msg.into())
         })?;
-        info!(url = %self.config.url, "PubSub connected");
+        info!(url = %redact_url(&self.config.url), "PubSub connected");
 
         let mut streams: SelectAll<BoxStream<'_, Event>> = SelectAll::new();
         let mut opened = Opened::default();
