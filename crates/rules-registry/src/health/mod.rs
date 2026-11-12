@@ -5,17 +5,19 @@
 //!   stream still delivers slots; poll sources are not failing in a row.
 //! - `canary`: synthetic alerts through the real alert path to every sink route; the canary
 //!   watchdog and the Betterstack heartbeat alert when one does not arrive.
+//! - `source_divergence`: the children of a `multi` data source stay up, in step and complete.
 
 pub mod canary;
 pub mod feed_liveness;
 pub mod slot_lag;
+pub mod source_divergence;
 
 use async_trait::async_trait;
 use solana_account::Account;
 use solana_pubkey::Pubkey;
 use solana_sentinel::{
     BootstrapCtx, GrpcSlotReader, Liveness, PollCtx, PollRules, PollSource, Program, ProgramDeps,
-    ProgramSpec, TickSource,
+    ProgramSpec, SourceHealth, TickSource,
 };
 use std::collections::HashMap;
 use std::time::Duration;
@@ -32,6 +34,8 @@ pub struct HealthDeps {
     pub pod_id: String,
     /// Feed liveness and canary state the service shares with every pipeline.
     pub liveness: Liveness,
+    /// Per-child health of a `multi` data source (empty otherwise).
+    pub source_health: SourceHealth,
 }
 
 #[async_trait]
@@ -41,6 +45,7 @@ impl ProgramDeps for HealthDeps {
             grpc_slot: ctx.grpc_slot.clone(),
             pod_id: ctx.pod_id.clone(),
             liveness: ctx.liveness.clone(),
+            source_health: ctx.source_health.clone(),
         })
     }
 }
@@ -70,13 +75,14 @@ pub fn spec() -> ProgramSpec {
             DEFAULT_POLL_INTERVAL,
             PollRules::new().register::<slot_lag::SlotLag>(),
         )
-        // In-process checks: they read the liveness registry, so they keep running (and
-        // alerting) when the RPC is down.
+        // In-process checks: they read the liveness registry and the multi-source health,
+        // so they keep running (and alerting) when the RPC is down.
         .poll(
             TickSource,
             DEFAULT_CHECK_INTERVAL,
             PollRules::new()
                 .register::<feed_liveness::FeedLiveness>()
-                .register::<canary::Canary>(),
+                .register::<canary::Canary>()
+                .register::<source_divergence::SourceDivergence>(),
         )
 }

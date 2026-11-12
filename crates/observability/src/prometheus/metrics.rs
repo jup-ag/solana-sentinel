@@ -332,6 +332,97 @@ pub fn record_canary_state(route: &str, sink: &str, age_secs: Option<f64>, misse
 pub fn record_heartbeat_withheld() {
     HEARTBEAT_WITHHELD_TOTAL.inc();
 }
+/// Delay buckets (seconds) for a child source delivering an item after the first child.
+const SOURCE_DELAY_BUCKETS: &[f64] = &[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0];
+
+/// Multi-source children: 1 while the child's stream is connected.
+static DATA_SOURCE_UP: LazyLock<IntGaugeVec> = LazyLock::new(|| {
+    let m = IntGaugeVec::new(
+        Opts::new(
+            "data_source_up",
+            "Multi-source child connected (1) or not (0)",
+        )
+        .namespace(namespace()),
+        &["source"],
+    )
+    .expect("invalid data_source_up metric");
+    REGISTRY
+        .register(Box::new(m.clone()))
+        .expect("register data_source_up");
+    m
+});
+
+/// Multi-source children: highest slot delivered and slots behind the most advanced child.
+static DATA_SOURCE_SLOT: LazyLock<IntGaugeVec> = LazyLock::new(|| {
+    let m = IntGaugeVec::new(
+        Opts::new(
+            "data_source_slot",
+            "Multi-source child: highest slot delivered (kind=slot) and lag behind the most \
+             advanced child (kind=lag)",
+        )
+        .namespace(namespace()),
+        &["source", "kind"],
+    )
+    .expect("invalid data_source_slot metric");
+    REGISTRY
+        .register(Box::new(m.clone()))
+        .expect("register data_source_slot");
+    m
+});
+
+/// Multi-source children: item counters (delivered, first, expected, missing, late).
+static DATA_SOURCE_ITEMS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    let m = IntCounterVec::new(
+        Opts::new(
+            "data_source_items_total",
+            "Multi-source child items: delivered, first (before any other child), expected \
+             (another child delivered it), missing (expected, not delivered within the grace \
+             window), late (delivered after it)",
+        )
+        .namespace(namespace()),
+        &["source", "kind"],
+    )
+    .expect("invalid data_source_items_total metric");
+    REGISTRY
+        .register(Box::new(m.clone()))
+        .expect("register data_source_items_total");
+    m
+});
+
+/// Multi-source children: restarts after the child's stream ended or failed.
+static DATA_SOURCE_RESTARTS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    let m = IntCounterVec::new(
+        Opts::new(
+            "data_source_restarts_total",
+            "Multi-source child restarts after its stream ended or failed",
+        )
+        .namespace(namespace()),
+        &["source"],
+    )
+    .expect("invalid data_source_restarts_total metric");
+    REGISTRY
+        .register(Box::new(m.clone()))
+        .expect("register data_source_restarts_total");
+    m
+});
+
+/// Multi-source children: how long after the first child this child delivered an item.
+static DATA_SOURCE_DELAY_SECONDS: LazyLock<HistogramVec> = LazyLock::new(|| {
+    let m = HistogramVec::new(
+        HistogramOpts::new(
+            "data_source_delay_seconds",
+            "Multi-source child: delay behind the first child delivering the same item",
+        )
+        .namespace(namespace())
+        .buckets(SOURCE_DELAY_BUCKETS.to_vec()),
+        &["source"],
+    )
+    .expect("invalid data_source_delay_seconds metric");
+    REGISTRY
+        .register(Box::new(m.clone()))
+        .expect("register data_source_delay_seconds");
+    m
+});
 
 /// Force initialization of all metrics so they appear in scrapes before their
 /// first use. Call once at startup with the deployment's metric prefix;
@@ -357,6 +448,11 @@ pub fn init(namespace: &str) {
     LazyLock::force(&CANARY_DELIVERY_AGE_SECONDS);
     LazyLock::force(&CANARY_MISSED);
     LazyLock::force(&HEARTBEAT_WITHHELD_TOTAL);
+    LazyLock::force(&DATA_SOURCE_UP);
+    LazyLock::force(&DATA_SOURCE_SLOT);
+    LazyLock::force(&DATA_SOURCE_ITEMS_TOTAL);
+    LazyLock::force(&DATA_SOURCE_RESTARTS_TOTAL);
+    LazyLock::force(&DATA_SOURCE_DELAY_SECONDS);
 }
 
 /// Increment the alert counter for a given severity
@@ -447,4 +543,59 @@ pub fn record_tracked_slot(rpc_slot: u64, grpc_slot: u64) {
     TRACKED_SLOT
         .with_label_values(&[&SlotSource::Grpc.to_string()])
         .set(grpc_slot as i64);
+}
+
+/// Multi-source item counter kinds; see `data_source_items_total`.
+#[derive(Debug, Clone, Copy)]
+pub enum SourceCount {
+    Delivered,
+    First,
+    Expected,
+    Missing,
+    Late,
+}
+
+impl SourceCount {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Delivered => "delivered",
+            Self::First => "first",
+            Self::Expected => "expected",
+            Self::Missing => "missing",
+            Self::Late => "late",
+        }
+    }
+}
+
+pub fn record_source_up(source: &str, up: bool) {
+    DATA_SOURCE_UP
+        .with_label_values(&[source])
+        .set(i64::from(up));
+}
+
+pub fn record_source_slot(source: &str, slot: u64, lag: u64) {
+    DATA_SOURCE_SLOT
+        .with_label_values(&[source, "slot"])
+        .set(i64::try_from(slot).unwrap_or(i64::MAX));
+    DATA_SOURCE_SLOT
+        .with_label_values(&[source, "lag"])
+        .set(i64::try_from(lag).unwrap_or(i64::MAX));
+}
+
+pub fn record_source_count(source: &str, kind: SourceCount, n: u64) {
+    DATA_SOURCE_ITEMS_TOTAL
+        .with_label_values(&[source, kind.label()])
+        .inc_by(n);
+}
+
+pub fn record_source_restart(source: &str) {
+    DATA_SOURCE_RESTARTS_TOTAL
+        .with_label_values(&[source])
+        .inc();
+}
+
+pub fn record_source_delay(source: &str, seconds: f64) {
+    DATA_SOURCE_DELAY_SECONDS
+        .with_label_values(&[source])
+        .observe(seconds);
 }
