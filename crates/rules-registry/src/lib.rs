@@ -22,6 +22,7 @@ pub mod health;
 pub mod pyth;
 pub mod spl_token;
 pub mod squads;
+pub mod squads_v3;
 pub mod stable_coin;
 pub mod system;
 pub mod wallet;
@@ -32,6 +33,7 @@ pub use solana_sentinel::ProgramSpec;
 /// instruction enums and their `InstructionParser`, defined types and `PROGRAM_ID`.
 pub mod idl {
     pub use crate::squads::parser::squads_multisig_program as squads_v4;
+    pub use crate::squads_v3::parser::squads_mpl as squads_v3;
     pub use crate::stable_coin::parser::{
         amm_v3 as raydium_clmm, meteora_dlmm, whirlpool as orca_whirlpool,
     };
