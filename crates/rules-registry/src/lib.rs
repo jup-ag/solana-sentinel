@@ -10,6 +10,7 @@
 //! | `wallet` | `unapproved_program_invoke`, `anchor_idl_instruction` |
 //! | `health` | `slot_lag` |
 //! | `squads_v4` | `new_proposal`, `new_member_addition`, `threshold_change`, `timelock_change` |
+//! | `squads_v3` | `new_proposal`, `new_member_addition`, `threshold_change`, `member_removal` |
 //! | `pyth` | `oracle_staleness`, `reference_price_drift` |
 //! | `stable_coin` | `depeg_monitor` |
 //!
@@ -46,6 +47,7 @@ pub const PROGRAMS: &[fn() -> ProgramSpec] = &[
     pyth::spec,
     spl_token::spec,
     squads::spec,
+    squads_v3::spec,
     stable_coin::spec,
     system::spec,
     wallet::spec,
