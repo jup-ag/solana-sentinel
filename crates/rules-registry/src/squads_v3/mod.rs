@@ -82,8 +82,8 @@ pub fn watched_config_change<T>(
 }
 
 /// v4's alert skeleton plus the v3 transaction. v4 turns `transaction` into a v4 app URL, so
-/// it gets `None`. The key carries `path` and the signature so a cooldown never suppresses a
-/// different proposal or execution of the same change.
+/// it gets `None`. The key carries `path`, the draft and the signature so a cooldown never
+/// suppresses a different proposal or execution of the same change.
 pub fn config_change_alert<T: Clone>(
     id: RuleId,
     change: &ConfigChange<T>,
@@ -101,6 +101,7 @@ pub fn config_change_alert<T: Clone>(
             change.multisig.to_string(),
             value.to_string(),
             change.path.to_string(),
+            change.transaction.map_or_else(String::new, |t| t.to_string()),
             ctx.tx_sig().to_string(),
         ])
 }
@@ -216,7 +217,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn executed_change_has_its_own_dedup_key() {
+    async fn dedup_key_separates_executed_and_drafts() {
         let (multisig, member) = (Pubkey::new_unique(), Pubkey::new_unique());
         let watched = HashSet::from([multisig]);
         let accounts = [multisig, Pubkey::default(), Pubkey::default()];
@@ -244,8 +245,19 @@ mod tests {
         let alert = |c: &ConfigChange<String>| {
             config_change_alert(id, c, "member", &member.to_string(), &ctx).build()
         };
-        let (executed, proposed) = (alert(&executed), alert(&proposed));
+        let other_draft = propose(
+            multisig,
+            multisig,
+            Pubkey::new_unique(),
+            SQUADS_V3_PROGRAM_ID,
+            &add_member(&member),
+        )
+        .await;
+        let other_draft = watched_config_change(&other_draft, &watched, pick_member).unwrap();
+        let (executed, proposed, other_draft) =
+            (alert(&executed), alert(&proposed), alert(&other_draft));
         assert_ne!(executed.local_gate_key, proposed.local_gate_key);
+        assert_ne!(proposed.local_gate_key, other_draft.local_gate_key);
         assert!(!proposed.metadata.contains_key("squads_url"));
     }
 }
