@@ -101,7 +101,9 @@ pub fn config_change_alert<T: Clone>(
             change.multisig.to_string(),
             value.to_string(),
             change.path.to_string(),
-            change.transaction.map_or_else(String::new, |t| t.to_string()),
+            change
+                .transaction
+                .map_or_else(String::new, |t| t.to_string()),
             ctx.tx_sig().to_string(),
         ])
 }
