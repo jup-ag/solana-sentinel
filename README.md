@@ -110,7 +110,7 @@ async fn main() -> anyhow::Result<()> {
 - **`config.toml`**: secrets, data source and sinks. Keep it out of git. Every setting is documented in [`config.example.toml`](config.example.toml).
 - **`rules.toml` or `rules/*.toml`**: rules, thresholds and sink routing. Version-controlled.
   To run one rule more than once (for example per team, each with its own addresses and sinks),
-  give every extra copy an `instance = "<label>"`. Each copy gets its own route, cooldown and
+  give every extra copy an `instance = "<label>"` (1 to 64 characters). Each copy gets its own route, cooldown and
   dedup keys. Program, name and instance together must be unique. Poll copies on one cadence
   share a fetch, so a `PollSource` that folds its accounts into one item (a whole-portfolio
   snapshot) gives every copy the combined view.

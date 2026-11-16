@@ -224,3 +224,45 @@ impl Record {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use domain::programs::Program;
+    use domain::rules::RuleId;
+    use std::collections::HashMap;
+
+    const RULE: RuleId = RuleId::new(Program::new("test_program"), "rule");
+
+    /// A parked copy restores to its own instance with the same gate key; a plain record keeps
+    /// the pre-instance JSON shape, so records parked by older binaries still restore.
+    #[test]
+    fn restore_resolves_the_instance() {
+        let copy = RULE.with_instance(Some("meteora"));
+        let router = Router::new(
+            HashMap::from([(RULE, vec![]), (copy, vec![])]),
+            HashMap::new(),
+        );
+        for rule in [RULE, copy] {
+            let pending = Pending {
+                alert: Alert::for_rule(RULE).build().for_instance(rule),
+                sinks: Vec::new(),
+                attempts: 0,
+                delivered: false,
+                next_try: None,
+                persisted: false,
+            };
+            let json = serde_json::to_string(&Record::from(&pending)).unwrap();
+            assert_eq!(json.contains("instance"), rule.instance.is_some());
+            let restored = serde_json::from_str::<Record>(&json)
+                .unwrap()
+                .restore(pending.alert.id, &router)
+                .expect("routed rule restores");
+            assert_eq!(restored.alert.rule, rule);
+            assert_eq!(
+                restored.alert.fleet_gate_key.to_string(),
+                pending.alert.fleet_gate_key.to_string()
+            );
+        }
+    }
+}

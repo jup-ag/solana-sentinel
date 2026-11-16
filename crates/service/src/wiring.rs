@@ -40,8 +40,8 @@ pub enum WiringError {
     DuplicateProgram(Program),
     #[error("program `{program}` defines rule `{rule}` more than once")]
     DuplicateRule { program: Program, rule: String },
-    #[error("program `{program}` rule `{rule}` has an empty `instance`")]
-    EmptyInstance { program: Program, rule: String },
+    #[error("program `{program}` rule `{rule}`: `instance` must be 1 to 64 characters")]
+    InvalidInstance { program: Program, rule: String },
     #[error(transparent)]
     Rule(#[from] RuleConfigError),
     #[error("program `{program}` rule `{rule}` was configured but not validated")]

@@ -67,8 +67,9 @@ pub trait StreamRule: Sized + Send + Sync + 'static {
         Ok(())
     }
 
-    /// Rules that keep last-seen state use interior mutability (`StateCache`);
-    /// the handler and the sweep loop may call concurrently.
+    /// Sees every event of the pipeline's union subscription, including other rules' and other
+    /// instances', so return `None` for anything outside this rule's own config. Rules that keep
+    /// last-seen state use interior mutability (`StateCache`); handler and sweep may call concurrently.
     fn evaluate(&self, ev: &Self::Event, ctx: &StreamCtx) -> Option<Alert>;
 
     /// Optional periodic re-evaluation with no incoming event (interest accrual, staleness).
