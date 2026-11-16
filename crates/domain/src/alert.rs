@@ -164,6 +164,18 @@ impl Alert {
     pub fn fleet_gate_key(&self) -> &DedupKey {
         &self.fleet_gate_key
     }
+
+    /// Re-tags an alert for a configured copy of its rule. Gates key on the displayed
+    /// `DedupKey` (`rule:instance` + digest), so copies never collapse. No-op without an instance.
+    #[must_use]
+    pub fn for_instance(mut self, rule: RuleId) -> Self {
+        if rule.instance.is_some() {
+            self.rule = rule;
+            self.local_gate_key.rule = rule;
+            self.fleet_gate_key.rule = rule;
+        }
+        self
+    }
 }
 
 // Layer 1 — intra-node dedup. Identifies a single alert occurrence as seen

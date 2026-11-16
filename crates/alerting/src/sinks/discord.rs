@@ -348,7 +348,7 @@ impl AlertSink for DiscordSink {
                     return;
                 }
                 Err(PostError::Failed(e)) => {
-                    warn!(sink = %self.id, rule = alert.rule.name, error = %e, "Discord alert not delivered");
+                    warn!(sink = %self.id, rule = %alert.rule, error = %e, "Discord alert not delivered");
                     Delivery::Failed
                 }
             };
@@ -402,7 +402,7 @@ impl DiscordPayload {
     fn from_alert(a: &Alert) -> Self {
         // Rule names are short compile-time constants, well under Discord's
         // 2000-char content limit.
-        let content = format!("{} {}", severity_emoji(a.severity), a.rule.name);
+        let content = format!("{} {}", severity_emoji(a.severity), a.rule);
 
         Self {
             content,
@@ -415,7 +415,7 @@ impl DiscordPayload {
 /// Build the alert's embed: rule as the title, the message as the body, and
 /// the metadata as fields.
 fn build_embed(a: &Alert) -> DiscordEmbed {
-    let title = truncate(&format!("Rule : {}", a.rule.name), EMBED_TITLE_LIMIT);
+    let title = truncate(&format!("Rule : {}", a.rule), EMBED_TITLE_LIMIT);
     let description = truncate(a.message.trim(), EMBED_DESCRIPTION_LIMIT);
     let footer = truncate(
         &format!("{} | {}", a.rule.program.as_str(), a.severity),

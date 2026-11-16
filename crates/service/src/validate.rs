@@ -34,12 +34,19 @@ fn raw_rules(
     p: &ProgramRules,
     program: domain::programs::Program,
 ) -> Result<RawRuleMap, WiringError> {
-    let mut raw = RawRuleMap::with_capacity(p.rules.len());
+    let mut raw = RawRuleMap::new();
     for r in &p.rules {
-        if raw.insert(r.name.clone(), r.config.clone()).is_some() {
-            return Err(WiringError::DuplicateRule {
+        if r.instance.as_deref().is_some_and(str::is_empty) {
+            return Err(WiringError::EmptyInstance {
                 program,
                 rule: r.name.clone(),
+            });
+        }
+        let key = (r.name.clone(), r.instance.clone());
+        if raw.insert(key, r.config.clone()).is_some() {
+            return Err(WiringError::DuplicateRule {
+                program,
+                rule: r.label(),
             });
         }
     }

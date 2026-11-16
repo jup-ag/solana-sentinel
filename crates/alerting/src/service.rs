@@ -273,7 +273,7 @@ impl Dispatcher {
     async fn admit(&mut self, alert: Alert) {
         let sinks = self.router.route(alert.rule).to_vec();
         if sinks.is_empty() {
-            warn!(rule = alert.rule.name, "Alert dropped: no matching route");
+            warn!(rule = %alert.rule, "Alert dropped: no matching route");
             return;
         }
         let mut pending = Pending {
@@ -378,7 +378,7 @@ impl Dispatcher {
                 .unwrap_or_default();
             if age >= self.max_alert_age {
                 error!(
-                    rule = pending.alert.rule.name,
+                    rule = %pending.alert.rule,
                     sinks = ?pending.sinks,
                     attempts = pending.attempts,
                     "Giving up on alert delivery",
@@ -400,7 +400,7 @@ impl Dispatcher {
             }
             if let Some(backoff) = backoff {
                 warn!(
-                    rule = pending.alert.rule.name,
+                    rule = %pending.alert.rule,
                     sinks = ?pending.sinks,
                     attempts = pending.attempts,
                     retry_in_s = backoff.as_secs(),
@@ -437,7 +437,7 @@ impl Dispatcher {
                 pending.alert.slot_hold = None;
             }
             Err(e) => error!(
-                rule = pending.alert.rule.name,
+                rule = %pending.alert.rule,
                 "Failed to persist alert to the outbox: {e:#}"
             ),
         }
@@ -459,7 +459,7 @@ impl Dispatcher {
             }
             Err(e) => {
                 error!(
-                    rule = pending.alert.rule.name,
+                    rule = %pending.alert.rule,
                     "Failed to park alert: {e:#}"
                 );
                 false

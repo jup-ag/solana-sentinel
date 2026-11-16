@@ -40,6 +40,8 @@ pub enum WiringError {
     DuplicateProgram(Program),
     #[error("program `{program}` defines rule `{rule}` more than once")]
     DuplicateRule { program: Program, rule: String },
+    #[error("program `{program}` rule `{rule}` has an empty `instance`")]
+    EmptyInstance { program: Program, rule: String },
     #[error(transparent)]
     Rule(#[from] RuleConfigError),
     #[error("program `{program}` rule `{rule}` was configured but not validated")]
@@ -203,10 +205,10 @@ fn build_routes(
     validated: &[ValidatedProgram],
     sinks: &HashMap<SinkId, Box<dyn AlertSink>>,
 ) -> Result<(Routes, Cooldowns), WiringError> {
-    let known: HashMap<(&'static str, &'static str), RuleId> = validated
+    let known: HashMap<(&str, &str, Option<&str>), RuleId> = validated
         .iter()
         .flat_map(ValidatedProgram::rule_ids)
-        .map(|id| ((id.program.as_str(), id.name), id))
+        .map(|id| ((id.program.as_str(), id.name, id.instance), id))
         .collect();
 
     let mut routes: Routes = HashMap::with_capacity(known.len());
@@ -215,18 +217,18 @@ fn build_routes(
     for p in programs {
         for r in &p.rules {
             let rule_id = known
-                .get(&(p.program.as_str(), r.name.as_str()))
+                .get(&(p.program.as_str(), r.name.as_str(), r.instance.as_deref()))
                 .copied()
                 .ok_or_else(|| WiringError::RuleNotValidated {
                     program: p.program.clone(),
-                    rule: r.name.clone(),
+                    rule: r.label(),
                 })?;
 
             for sink in &r.sinks {
                 if !sinks.contains_key(sink) {
                     return Err(WiringError::UnconfiguredSink {
                         program: rule_id.program,
-                        rule: r.name.clone(),
+                        rule: r.label(),
                         sink: sink.clone(),
                     });
                 }

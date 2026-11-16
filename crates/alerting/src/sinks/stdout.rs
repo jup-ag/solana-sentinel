@@ -25,7 +25,7 @@ impl AlertSink for StdoutSink {
     async fn send(&self, alert: &Alert) -> Result<(), AlertSinkError> {
         let line = json!({
             "id": alert.id,
-            "rule": alert.rule.name,
+            "rule": alert.rule.to_string(),
             "program": alert.rule.program.as_str(),
             "severity": alert.severity.to_string(),
             "message": alert.message,

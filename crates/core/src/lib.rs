@@ -42,7 +42,7 @@ pub use rule_set::{PollRules, StreamRules};
 pub use shipstern_core::{AccountFilter, MemcmpData};
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 pub use spec::{ProgramReport, ProgramSpec, StartCtx, StartedProgram, ValidatedProgram};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 pub use subscription::Subscription;
 
@@ -59,5 +59,5 @@ pub struct BootstrapCtx {
     pub pod_id: String,
 }
 
-/// Raw per-rule config payloads keyed by rule name, straight from `rules.toml`.
-pub type RawRuleMap = HashMap<String, config::Value>;
+/// Raw per-rule config payloads keyed by rule name and optional instance, straight from `rules.toml`.
+pub type RawRuleMap = BTreeMap<(String, Option<String>), config::Value>;

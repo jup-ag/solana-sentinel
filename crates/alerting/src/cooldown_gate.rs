@@ -37,8 +37,8 @@ impl CooldownGate {
             match gate.check(alert).await {
                 Ok(true) => {}
                 Ok(false) => {
-                    debug!(rule = alert.rule.name, "Alert suppressed by local gate");
-                    record_alert_suppressed(alert.rule.name);
+                    debug!(rule = %alert.rule, "Alert suppressed by local gate");
+                    record_alert_suppressed(&alert.rule.to_string());
                     return false;
                 }
                 Err(e) => error!("Failed to check local gate: {e:#}"),
@@ -49,8 +49,8 @@ impl CooldownGate {
             match gate.check(alert).await {
                 Ok(true) => {}
                 Ok(false) => {
-                    debug!(rule = alert.rule.name, "Alert suppressed by fleet gate");
-                    record_alert_suppressed(alert.rule.name);
+                    debug!(rule = %alert.rule, "Alert suppressed by fleet gate");
+                    record_alert_suppressed(&alert.rule.to_string());
                     // Settle the local claim, or it stays open and blocks every later occurrence.
                     if let Some(local) = &mut self.local_gate {
                         if let Err(e) = local.release(alert).await {

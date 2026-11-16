@@ -27,6 +27,9 @@ pub struct Outbox {
 struct Record {
     program: String,
     rule: String,
+    // Absent in records written before rule instances existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    instance: Option<String>,
     severity: u8,
     message: String,
     metadata: BTreeMap<String, String>,
@@ -165,6 +168,7 @@ impl From<&Pending> for Record {
         Self {
             program: a.rule.program.as_str().to_string(),
             rule: a.rule.name.to_string(),
+            instance: a.rule.instance.map(str::to_string),
             severity: match a.severity {
                 Severity::Info => 0,
                 Severity::Warn => 1,
@@ -189,7 +193,7 @@ impl From<&Pending> for Record {
 
 impl Record {
     fn restore(self, id: Uuid, router: &Router) -> Option<Pending> {
-        let rule = router.rule(&self.program, &self.rule)?;
+        let rule = router.rule(&self.program, &self.rule, self.instance.as_deref())?;
         let alert = Alert {
             id,
             rule,
