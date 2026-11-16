@@ -8,11 +8,25 @@ use std::path::{Path, PathBuf};
 pub struct RuleConfig {
     pub program: String,
     pub name: String,
+    /// Names one of several copies of the same rule, each with its own config, sinks,
+    /// cooldown and dedup keys. Program, name and instance together must be unique.
+    #[serde(default)]
+    pub instance: Option<String>,
     pub sinks: Vec<SinkId>,
     pub cooldown_period_seconds: Option<u64>,
     /// The rule's typed config table; may be omitted for rules that take none.
     #[serde(default)]
     pub config: Value,
+}
+
+impl RuleConfig {
+    /// `name`, or `name:instance` for a named copy; matches `RuleId`'s display.
+    pub fn label(&self) -> String {
+        match &self.instance {
+            Some(instance) => format!("{}:{instance}", self.name),
+            None => self.name.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

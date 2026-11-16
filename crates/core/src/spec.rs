@@ -153,7 +153,7 @@ where
         let base_id = self.parser.id().into_owned();
         let static_subscription = self.rules.static_subscription();
         let rules = self.rules.build(deps, &ctx.bootstrap).await?;
-        let rule_names: Vec<_> = rules.iter().map(|r| r.id.name).collect();
+        let rule_names: Vec<_> = rules.iter().map(|r| r.id.to_string()).collect();
 
         let subscription = static_subscription
             .clone()
@@ -404,7 +404,7 @@ impl ProgramSpec {
     /// Typed-config validation of the configured rules. No I/O; errors name program, rule and field.
     pub fn validate(&self, raw: &RawRuleMap) -> Result<ValidatedProgram, RuleConfigError> {
         let known: HashSet<&'static str> = self.rule_ids().into_iter().map(|id| id.name).collect();
-        if let Some(unknown) = raw.keys().find(|name| !known.contains(name.as_str())) {
+        if let Some((unknown, _)) = raw.keys().find(|(name, _)| !known.contains(name.as_str())) {
             return Err(RuleConfigError::UnknownRule {
                 program: self.program,
                 rule: unknown.clone(),
@@ -523,11 +523,11 @@ impl Display for ProgramReport {
         for p in &self.pipelines {
             writeln!(f, "  {} pipeline `{}`", p.kind.as_str(), p.parser)?;
             for rule in &p.rules {
-                writeln!(f, "    rule {}", rule.name)?;
+                writeln!(f, "    rule {rule}")?;
             }
             if let Some(stream) = &p.stream {
                 for (id, pf) in &stream.per_rule {
-                    writeln!(f, "    {}: {}", id.name, describe(pf))?;
+                    writeln!(f, "    {id}: {}", describe(pf))?;
                 }
                 writeln!(f, "    subscription: {}", describe(&stream.union))?;
             }
@@ -537,7 +537,10 @@ impl Display for ProgramReport {
                     "    every {}s: {} accounts for {:?}",
                     poll.interval.as_secs(),
                     poll.accounts.len(),
-                    poll.rules.iter().map(|r| r.name).collect::<Vec<_>>()
+                    poll.rules
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
                 )?;
                 for a in &poll.accounts {
                     writeln!(f, "      {a}")?;
@@ -617,18 +620,21 @@ mod tests {
         }
     }
 
-    /// validate → static subscription → build → handler evaluates and forwards, with `tx_sig` filled in.
+    /// validate → static subscription → build → handler evaluates and forwards, with `tx_sig`
+    /// filled in. A second configured instance alerts under its own id and dedup keys.
     #[tokio::test]
     async fn validated_rule_fires_through_handler() {
         let spec = ProgramSpec::new(PROGRAM)
             .instruction(RawInstructionParser, StreamRules::new().register::<AnyIx>());
 
-        let raw = RawRuleMap::from([(
-            "any_ix".to_string(),
-            config::Value::from(config::Map::<String, config::Value>::new()),
-        )]);
+        let empty = || config::Value::from(config::Map::<String, config::Value>::new());
+        let raw = RawRuleMap::from([
+            (("any_ix".to_string(), None), empty()),
+            (("any_ix".to_string(), Some("meteora".to_string())), empty()),
+        ]);
         let validated = spec.validate(&raw).expect("config validates");
-        assert_eq!(validated.rule_ids(), vec![AnyIx::ID]);
+        let meteora = AnyIx::ID.with_instance(Some("meteora"));
+        assert_eq!(validated.rule_ids(), vec![AnyIx::ID, meteora]);
         let union = validated.report().pipelines[0]
             .stream
             .as_ref()
@@ -637,20 +643,34 @@ mod tests {
             .clone();
         assert!(union.tx_accounts_include.contains(&WATCHED));
 
-        let unknown = RawRuleMap::from([("nope".to_string(), config::Value::from(1))]);
+        let unknown = RawRuleMap::from([(("nope".to_string(), None), config::Value::from(1))]);
         assert!(matches!(
             spec.validate(&unknown),
             Err(RuleConfigError::UnknownRule { .. })
         ));
 
         let (tx, mut rx) = mpsc::channel(4);
-        let handler = RuleHandler::new(vec![BuiltStreamRule::new(AnyIx, None)], tx);
+        let rules = vec![
+            BuiltStreamRule::new(AnyIx, AnyIx::ID, None),
+            BuiltStreamRule::new(AnyIx, meteora, None),
+        ];
+        let handler = RuleHandler::new(rules, tx);
         let update = ix_update(Pubkey::new_unique(), &[WATCHED], vec![1, 2, 3]);
         let event = RawInstructionParser.parse(&update).await.unwrap();
         handler.handle(&event, &update).await.unwrap();
 
-        let alert = rx.try_recv().expect("alert forwarded");
-        assert_eq!(alert.rule, AnyIx::ID);
-        assert!(alert.metadata.contains_key("tx_sig"));
+        let plain = rx.try_recv().expect("alert forwarded");
+        assert_eq!(plain.rule, AnyIx::ID);
+        assert!(plain.metadata.contains_key("tx_sig"));
+        let copy = rx.try_recv().expect("instance alert forwarded");
+        assert_eq!(copy.rule, meteora);
+        assert_ne!(
+            copy.local_gate_key.to_string(),
+            plain.local_gate_key.to_string()
+        );
+        assert_ne!(
+            copy.fleet_gate_key.to_string(),
+            plain.fleet_gate_key.to_string()
+        );
     }
 }

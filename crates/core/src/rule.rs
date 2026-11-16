@@ -67,8 +67,9 @@ pub trait StreamRule: Sized + Send + Sync + 'static {
         Ok(())
     }
 
-    /// Rules that keep last-seen state use interior mutability (`StateCache`);
-    /// the handler and the sweep loop may call concurrently.
+    /// Sees every event of the pipeline's union subscription, including other rules' and other
+    /// instances', so return `None` for anything outside this rule's own config. Rules that keep
+    /// last-seen state use interior mutability (`StateCache`); handler and sweep may call concurrently.
     fn evaluate(&self, ev: &Self::Event, ctx: &StreamCtx) -> Option<Alert>;
 
     /// Optional periodic re-evaluation with no incoming event (interest accrual, staleness).
@@ -129,14 +130,26 @@ impl<Ev> Clone for BuiltStreamRule<Ev> {
 }
 
 impl<Ev: Send + Sync + 'static> BuiltStreamRule<Ev> {
-    pub fn new<R: StreamRule<Event = Ev>>(rule: R, sweep_interval: Option<Duration>) -> Self {
+    /// `id` is `R::ID` plus the configured instance; every alert the rule raises carries it.
+    pub fn new<R: StreamRule<Event = Ev>>(
+        rule: R,
+        id: RuleId,
+        sweep_interval: Option<Duration>,
+    ) -> Self {
         let rule = Arc::new(rule);
         let eval = Arc::clone(&rule);
         Self {
-            id: R::ID,
-            evaluate: Arc::new(move |ev: &Ev, ctx: &StreamCtx| eval.evaluate(ev, ctx)),
+            id,
+            evaluate: Arc::new(move |ev: &Ev, ctx: &StreamCtx| {
+                eval.evaluate(ev, ctx).map(|a| a.for_instance(id))
+            }),
             sweep: sweep_interval.map(|interval| {
-                let sweeper: SweepFn = Arc::new(move || rule.sweep());
+                let sweeper: SweepFn = Arc::new(move || {
+                    rule.sweep()
+                        .into_iter()
+                        .map(|a| a.for_instance(id))
+                        .collect()
+                });
                 (interval, sweeper)
             }),
         }
@@ -150,10 +163,13 @@ pub struct BuiltPollRule<It> {
 }
 
 impl<It: Send + Sync + 'static> BuiltPollRule<It> {
-    pub fn new<R: PollRule<Item = It>>(rule: R) -> Self {
+    /// `id` is `R::ID` plus the configured instance; every alert the rule raises carries it.
+    pub fn new<R: PollRule<Item = It>>(rule: R, id: RuleId) -> Self {
         Self {
-            id: R::ID,
-            evaluate: Arc::new(move |item: &It, ctx: &PollCtx| rule.evaluate(item, ctx)),
+            id,
+            evaluate: Arc::new(move |item: &It, ctx: &PollCtx| {
+                rule.evaluate(item, ctx).map(|a| a.for_instance(id))
+            }),
         }
     }
 }
@@ -176,14 +192,14 @@ pub enum RuleConfigError {
     #[error("program `{program}` rule `{rule}`: invalid config: {source}")]
     Config {
         program: Program,
-        rule: &'static str,
+        rule: RuleId,
         #[source]
         source: Box<config::ConfigError>,
     },
     #[error("program `{program}` rule `{rule}`: {source}")]
     Build {
         program: Program,
-        rule: &'static str,
+        rule: RuleId,
         #[source]
         source: anyhow::Error,
     },

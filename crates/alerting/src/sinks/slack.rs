@@ -207,7 +207,7 @@ impl AlertSink for SlackSink {
                 Ok(()) => Delivery::Delivered,
                 Err(PostError::Deferred) => Delivery::Deferred,
                 Err(PostError::Failed(e)) => {
-                    warn!(sink = %self.id, rule = alert.rule.name, error = %e, "Slack alert not delivered");
+                    warn!(sink = %self.id, rule = %alert.rule, error = %e, "Slack alert not delivered");
                     Delivery::Failed
                 }
             };
@@ -545,7 +545,7 @@ struct ButtonElement {
 
 impl<'a> SlackPayload<'a> {
     fn from_alert(channel: &'a str, a: &Alert) -> Self {
-        let header = truncate(&format!("Rule : {}", a.rule.name), HEADER_TEXT_LIMIT);
+        let header = truncate(&format!("Rule : {}", a.rule), HEADER_TEXT_LIMIT);
         let emoji = severity_emoji(a.severity);
 
         // Clamp before styling so the clamp can't slice a code fence in half.

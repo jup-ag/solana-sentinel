@@ -73,6 +73,9 @@ impl StreamRule for MintAuthorityChange {
             return None;
         };
         let pubkey = ctx.account?;
+        if !self.mints.contains(&pubkey) {
+            return None;
+        }
         let current = Authorities {
             mint: mint.mint_authority.as_ref().map(|k| to_solana_pubkey(k.0)),
             freeze: mint
