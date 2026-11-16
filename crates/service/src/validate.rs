@@ -7,6 +7,8 @@ use crate::wiring::WiringError;
 use solana_sentinel::{ProgramSpec, RawRuleMap, ValidatedProgram};
 use std::collections::HashSet;
 
+pub(crate) const MAX_INSTANCE_LEN: usize = 64;
+
 pub fn validate_programs(
     config: &SentinelConfig,
     registry: &[fn() -> ProgramSpec],
@@ -34,12 +36,23 @@ fn raw_rules(
     p: &ProgramRules,
     program: domain::programs::Program,
 ) -> Result<RawRuleMap, WiringError> {
-    let mut raw = RawRuleMap::with_capacity(p.rules.len());
+    let mut raw = RawRuleMap::new();
     for r in &p.rules {
-        if raw.insert(r.name.clone(), r.config.clone()).is_some() {
+        // The label lands in Redis keys, metric labels and sink titles, so keep it short.
+        if r.instance
+            .as_ref()
+            .is_some_and(|i| i.is_empty() || i.chars().count() > MAX_INSTANCE_LEN)
+        {
+            return Err(WiringError::InvalidInstance {
+                program,
+                rule: r.label(),
+            });
+        }
+        let key = (r.name.clone(), r.instance.clone());
+        if raw.insert(key, r.config.clone()).is_some() {
             return Err(WiringError::DuplicateRule {
                 program,
-                rule: r.name.clone(),
+                rule: r.label(),
             });
         }
     }

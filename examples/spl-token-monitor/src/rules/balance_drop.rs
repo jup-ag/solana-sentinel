@@ -73,14 +73,18 @@ impl StreamRule for BalanceDrop {
             return None;
         };
         let account = ctx.account?;
+        if !self.accounts.contains(&account) {
+            return None;
+        }
         let previous = self
             .last
             .replace(Self::ID, account, token.amount, ctx.slot)?;
         if previous == 0 || token.amount >= previous {
             return None;
         }
-        let drop_bps = (previous - token.amount) * 10_000 / previous;
-        if drop_bps < self.drop_bps {
+        // u128: `drop * 10_000` overflows u64 for balances above ~1.8e15 base units.
+        let drop_bps = u128::from(previous - token.amount) * 10_000 / u128::from(previous);
+        if drop_bps < u128::from(self.drop_bps) {
             return None;
         }
         Some(

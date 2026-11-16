@@ -61,7 +61,7 @@ pub fn spawn_poll_loop<S: PollSource>(
         program = %program,
         poll_interval_secs = interval.as_secs(),
         accounts = accounts.len(),
-        rules = ?rules.iter().map(|r| r.id.name).collect::<Vec<_>>(),
+        rules = ?rules.iter().map(|r| r.id.to_string()).collect::<Vec<_>>(),
         "Spawning poll loop"
     );
 

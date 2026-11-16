@@ -20,10 +20,10 @@ type BuildFn<Built> = Box<
 
 struct Entry<V> {
     id: RuleId,
-    validate: fn(Value) -> Result<V, config::ConfigError>,
+    validate: fn(RuleId, Value) -> Result<V, config::ConfigError>,
 }
 
-/// Typed-config validation for the entries present in `raw`; no I/O.
+/// Typed-config validation for every configured instance of the entries in `raw`; no I/O.
 fn validate_entries<V>(
     entries: &[Entry<V>],
     program: Program,
@@ -31,16 +31,17 @@ fn validate_entries<V>(
 ) -> Result<Vec<V>, RuleConfigError> {
     let mut out = Vec::new();
     for entry in entries {
-        let Some(value) = raw.get(entry.id.name) else {
-            continue;
-        };
-        let validated =
-            (entry.validate)(value.clone()).map_err(|source| RuleConfigError::Config {
-                program,
-                rule: entry.id.name,
-                source: Box::new(source),
-            })?;
-        out.push(validated);
+        for ((_, instance), value) in raw.iter().filter(|((name, _), _)| name == entry.id.name) {
+            // Leaked once per configured rule at startup, so `RuleId` stays `Copy`.
+            let id = entry.id.with_instance(instance.clone().map(|i| &*i.leak()));
+            let validated =
+                (entry.validate)(id, value.clone()).map_err(|source| RuleConfigError::Config {
+                    program,
+                    rule: id,
+                    source: Box::new(source),
+                })?;
+            out.push(validated);
+        }
     }
     Ok(out)
 }
@@ -89,18 +90,19 @@ impl<Ev: Send + Sync + 'static> StreamRules<Ev> {
 }
 
 fn validate_stream<R: StreamRule>(
+    id: RuleId,
     value: Value,
 ) -> Result<ValidatedStreamRule<R::Event>, config::ConfigError> {
     let cfg: R::Config = value.try_deserialize()?;
     let sweep_interval = R::sweep_interval(&cfg);
     Ok(ValidatedStreamRule {
-        id: R::ID,
+        id,
         subscription: R::subscription(&cfg),
         build: Box::new(move |deps, ctx| {
             Box::pin(async move {
                 let mut rule = R::build(cfg, deps)?;
                 rule.bootstrap(ctx).await?;
-                Ok(BuiltStreamRule::new(rule, sweep_interval))
+                Ok(BuiltStreamRule::new(rule, id, sweep_interval))
             })
         }),
     })
@@ -152,7 +154,7 @@ impl<Ev: Send + Sync + 'static> ValidatedStream<Ev> {
                 .await
                 .map_err(|source| RuleConfigError::Build {
                     program: self.program,
-                    rule: rule.id.name,
+                    rule: rule.id,
                     source,
                 })?;
             out.push(built);
@@ -205,18 +207,19 @@ impl<It: Send + Sync + 'static> PollRules<It> {
 }
 
 fn validate_poll<R: PollRule>(
+    id: RuleId,
     value: Value,
 ) -> Result<ValidatedPollRule<R::Item>, config::ConfigError> {
     let cfg: R::Config = value.try_deserialize()?;
     Ok(ValidatedPollRule {
-        id: R::ID,
+        id,
         accounts: R::accounts(&cfg),
         interval: R::poll_interval(&cfg),
         build: Box::new(move |deps, ctx| {
             Box::pin(async move {
                 let mut rule = R::build(cfg, deps)?;
                 rule.bootstrap(ctx).await?;
-                Ok(BuiltPollRule::new(rule))
+                Ok(BuiltPollRule::new(rule, id))
             })
         }),
     })
@@ -283,7 +286,7 @@ impl<It: Send + Sync + 'static> ValidatedPoll<It> {
                 .await
                 .map_err(|source| RuleConfigError::Build {
                     program: self.program,
-                    rule: rule.id.name,
+                    rule: rule.id,
                     source,
                 })?;
             let bucket = buckets.entry(interval).or_default();

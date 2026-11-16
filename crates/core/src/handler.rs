@@ -84,14 +84,14 @@ pub async fn forward_alert(
 
     match alert.severity {
         Severity::Info => info!(
-            rule = alert.rule.name,
+            rule = %alert.rule,
             slot,
             metadata = ?alert.metadata,
             message = %alert.message,
             "Alert raised",
         ),
         Severity::Warn | Severity::Critical => warn!(
-            rule = alert.rule.name,
+            rule = %alert.rule,
             slot,
             metadata = ?alert.metadata,
             message = %alert.message,

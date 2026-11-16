@@ -32,11 +32,11 @@ impl Router {
         self.sinks.get(id).map(std::convert::AsRef::as_ref)
     }
 
-    /// The routed rule with this program and name, if any.
-    pub fn rule(&self, program: &str, name: &str) -> Option<RuleId> {
+    /// The routed rule with this program, name and instance, if any.
+    pub fn rule(&self, program: &str, name: &str, instance: Option<&str>) -> Option<RuleId> {
         self.routes
             .keys()
-            .find(|r| r.program.as_str() == program && r.name == name)
+            .find(|r| r.program.as_str() == program && r.name == name && r.instance == instance)
             .copied()
     }
 
