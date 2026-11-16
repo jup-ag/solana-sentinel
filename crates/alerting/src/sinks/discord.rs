@@ -400,8 +400,8 @@ struct DiscordFooter {
 
 impl DiscordPayload {
     fn from_alert(a: &Alert) -> Self {
-        // Rule names are short compile-time constants, well under Discord's
-        // 2000-char content limit.
+        // Rule names are short constants and instances are capped at 64 chars at startup,
+        // well under Discord's 2000-char content limit.
         let content = format!("{} {}", severity_emoji(a.severity), a.rule);
 
         Self {

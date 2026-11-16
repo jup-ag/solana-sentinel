@@ -7,7 +7,7 @@ use crate::wiring::WiringError;
 use solana_sentinel::{ProgramSpec, RawRuleMap, ValidatedProgram};
 use std::collections::HashSet;
 
-const MAX_INSTANCE_LEN: usize = 64;
+pub(crate) const MAX_INSTANCE_LEN: usize = 64;
 
 pub fn validate_programs(
     config: &SentinelConfig,
@@ -41,7 +41,7 @@ fn raw_rules(
         // The label lands in Redis keys, metric labels and sink titles, so keep it short.
         if r.instance
             .as_ref()
-            .is_some_and(|i| i.is_empty() || i.len() > MAX_INSTANCE_LEN)
+            .is_some_and(|i| i.is_empty() || i.chars().count() > MAX_INSTANCE_LEN)
         {
             return Err(WiringError::InvalidInstance {
                 program,
