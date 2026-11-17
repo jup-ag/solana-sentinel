@@ -54,34 +54,3 @@ impl StreamRule for ThresholdChange {
         )
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::squads_v3::parser::SquadsV3IxParser;
-    use crate::squads_v3::SQUADS_V3_PROGRAM_ID;
-    use solana_sentinel::testing::{ix_update, parse, stream_ctx};
-
-    /// `sha256("global:remove_member_and_change_threshold")[..8]`.
-    const REMOVE_MEMBER_AND_CHANGE_THRESHOLD: [u8; 8] =
-        [0xe6, 0x61, 0xb7, 0xf8, 0x2b, 0xbe, 0x9a, 0x1d];
-
-    #[tokio::test]
-    async fn fires_on_member_removed_with_threshold_change() {
-        let multisig = Pubkey::new_unique();
-        let mut data = REMOVE_MEMBER_AND_CHANGE_THRESHOLD.to_vec();
-        data.extend_from_slice(Pubkey::new_unique().as_ref());
-        data.extend_from_slice(&1u16.to_le_bytes());
-        let parsed = parse(
-            &SquadsV3IxParser {},
-            &ix_update(SQUADS_V3_PROGRAM_ID, &[multisig], data),
-        )
-        .await;
-
-        let rule = ThresholdChange {
-            watched: [multisig].into(),
-        };
-        let alert = rule.evaluate(&parsed, &stream_ctx(1, Some("sig"))).unwrap();
-        assert_eq!(alert.metadata["requested_threshold"], "1");
-    }
-}

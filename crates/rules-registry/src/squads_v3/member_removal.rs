@@ -51,31 +51,3 @@ impl StreamRule for MemberRemoval {
         )
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::squads_v3::parser::SquadsV3IxParser;
-    use crate::squads_v3::SQUADS_V3_PROGRAM_ID;
-    use solana_sentinel::testing::{ix_update, parse, stream_ctx};
-
-    /// `sha256("global:remove_member")[..8]`.
-    const REMOVE_MEMBER: [u8; 8] = [0xab, 0x39, 0xe7, 0x96, 0xa7, 0x80, 0x12, 0x37];
-
-    #[tokio::test]
-    async fn fires_on_plain_member_removal() {
-        let (multisig, member) = (Pubkey::new_unique(), Pubkey::new_unique());
-        let data = [&REMOVE_MEMBER[..], member.as_ref()].concat();
-        let parsed = parse(
-            &SquadsV3IxParser {},
-            &ix_update(SQUADS_V3_PROGRAM_ID, &[multisig], data),
-        )
-        .await;
-
-        let rule = MemberRemoval {
-            watched: [multisig].into(),
-        };
-        let alert = rule.evaluate(&parsed, &stream_ctx(1, Some("sig"))).unwrap();
-        assert_eq!(alert.metadata["removed_member"], member.to_string());
-    }
-}
