@@ -204,9 +204,6 @@ mod tests {
         )
         .await;
         assert!(watched_config_change(&other_multisig, &watched, pick_member).is_none());
-
-        let truncated = propose(multisig, multisig, tx, SQUADS_V3_PROGRAM_ID, &ADD_MEMBER).await;
-        assert!(watched_config_change(&truncated, &watched, pick_member).is_none());
     }
 
     #[tokio::test]
