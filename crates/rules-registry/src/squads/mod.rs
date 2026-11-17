@@ -7,7 +7,9 @@ pub mod parser;
 pub mod threshold_change;
 pub mod timelock_change;
 
-use crate::squads::parser::{config_action, SquadsV4Ix, SquadsV4IxParser, SquadsV4Ixs};
+use crate::squads::parser::{
+    config_action, squads_multisig_program, SquadsV4Ix, SquadsV4IxParser, SquadsV4Ixs,
+};
 use serde::Deserialize;
 use shipstern_core::KeyBytes;
 use solana_pubkey::Pubkey;
@@ -18,7 +20,7 @@ use std::collections::HashSet;
 
 pub const PROGRAM: Program = Program::new("squads_v4");
 pub const SQUADS_V4_PROGRAM_ID: Pubkey =
-    Pubkey::from_str_const("SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf");
+    Pubkey::new_from_array(squads_multisig_program::PROGRAM_ID);
 
 /// Web app base URL; a squad is addressed by its default (index 0) vault, not the multisig.
 pub const SQUADS_APP_BASE_URL: &str = "https://app.squads.so";

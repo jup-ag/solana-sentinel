@@ -21,8 +21,7 @@ use solana_sentinel::{Program, ProgramSpec, RuleId, StreamCtx, StreamRules};
 use std::collections::HashSet;
 
 pub const PROGRAM: Program = Program::new("squads_v3");
-pub const SQUADS_V3_PROGRAM_ID: Pubkey =
-    Pubkey::from_str_const("SMPLecH534NA9acpos4G6x7uf3LWbCAwZQE9e8ZekMu");
+pub const SQUADS_V3_PROGRAM_ID: Pubkey = Pubkey::new_from_array(squads_mpl::PROGRAM_ID);
 
 pub fn spec() -> ProgramSpec {
     ProgramSpec::new(PROGRAM).instruction(
@@ -162,14 +161,6 @@ mod tests {
             &ix_update(SQUADS_V3_PROGRAM_ID, &accounts, data),
         )
         .await
-    }
-
-    #[test]
-    fn idl_address_matches_program_id() {
-        assert_eq!(
-            Pubkey::new_from_array(squads_mpl::PROGRAM_ID),
-            SQUADS_V3_PROGRAM_ID
-        );
     }
 
     #[tokio::test]
