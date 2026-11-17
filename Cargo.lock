@@ -5271,6 +5271,7 @@ dependencies = [
  "solana-pubsub-client",
  "solana-rpc-client",
  "solana-rpc-client-api",
+ "solana-sentinel-utility",
  "solana-signature",
  "solana-transaction 4.1.5",
  "solana-transaction-status-client-types",
@@ -5390,6 +5391,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "bs58",
+ "five8",
  "serde",
  "shipstern-core",
  "solana-account",
