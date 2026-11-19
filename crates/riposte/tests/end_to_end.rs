@@ -1,15 +1,15 @@
-use dedup_gate::fleet_gate::FleetGate;
 use async_trait::async_trait;
+use dedup_gate::fleet_gate::FleetGate;
 use domain::alert::{Alert, DedupScope};
 use domain::counter_measure::CounterMeasure;
 use domain::programs::Program;
 use domain::rules::RuleId;
+use serde_json::json;
 use solana_hash::Hash;
 use solana_instruction::{AccountMeta, Instruction};
 use solana_keypair::Keypair;
 use solana_message::VersionedMessage;
 use solana_pubkey::Pubkey;
-use serde_json::json;
 use solana_rpc_client::api::request::RpcRequest;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sentinel_riposte::blockhash::BlockhashCache;
@@ -99,7 +99,10 @@ async fn counter_measure_is_signed_sent_once_per_condition_and_reported_landed()
     };
     // A replayed trigger far behind the tip: reported, never sent.
     let replayed = Alert::for_rule(RULE).key(["vault-1"]).build();
-    queue_tx.send((replayed, cm.clone(), Some(1))).await.unwrap();
+    queue_tx
+        .send((replayed, cm.clone(), Some(1)))
+        .await
+        .unwrap();
     let report = tokio::time::timeout(Duration::from_secs(5), alerts_rx.recv())
         .await
         .unwrap()
@@ -130,7 +133,10 @@ async fn counter_measure_is_signed_sent_once_per_condition_and_reported_landed()
     assert_eq!(report.metadata["signature"], tx.signatures[0].to_string());
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(sent_rx.try_recv().is_err(), "duplicate tx sent");
-    assert!(alerts_rx.try_recv().is_err(), "second countermeasure reported");
+    assert!(
+        alerts_rx.try_recv().is_err(),
+        "second countermeasure reported"
+    );
 
     let msg = &tx.message;
     assert_eq!(msg.static_account_keys()[0], payer);

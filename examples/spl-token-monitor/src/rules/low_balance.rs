@@ -23,7 +23,11 @@ const ATA_PROGRAM_ID: Pubkey =
 /// Legacy Token associated token account of `owner` for `mint`.
 fn ata(owner: &Pubkey, mint: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(
-        &[owner.as_ref(), spl_token_interface::ID.as_ref(), mint.as_ref()],
+        &[
+            owner.as_ref(),
+            spl_token_interface::ID.as_ref(),
+            mint.as_ref(),
+        ],
         &ATA_PROGRAM_ID,
     )
     .0
@@ -115,7 +119,10 @@ impl PollRule for LowBalance {
         let account: Pubkey = alert.metadata["account"].parse().context("account")?;
         let mint: Pubkey = alert.metadata["mint"].parse().context("mint")?;
         let from = ata(&ctx.authority, &mint);
-        anyhow::ensure!(from != account, "the signer's ATA is the low account itself");
+        anyhow::ensure!(
+            from != account,
+            "the signer's ATA is the low account itself"
+        );
         let transfer = spl_token_interface::instruction::transfer(
             &spl_token_interface::ID,
             &from,
@@ -143,16 +150,32 @@ mod tests {
             "accounts = [\"{account}\"]\nmin_amount = 100\nrefill = {{ amount = 500 }}"
         ));
         let rule = LowBalance::build(cfg, &Deps::default()).unwrap();
-        let item = TokenBalance { account, mint, amount: 10 };
-        let alert = rule.evaluate(&item, &poll_ctx(1)).expect("below min_amount");
+        let item = TokenBalance {
+            account,
+            mint,
+            amount: 10,
+        };
+        let alert = rule
+            .evaluate(&item, &poll_ctx(1))
+            .expect("below min_amount");
 
         // Transfer(signer's ATA → account, authority as signer), amount 500.
         let authority = Pubkey::new_unique();
         let from = ata(&authority, &mint);
-        let cm = rule.counteract(&alert, &CounteractCtx { authority }).unwrap().expect("refill configured");
+        let cm = rule
+            .counteract(&alert, &CounteractCtx { authority })
+            .unwrap()
+            .expect("refill configured");
         let ix = &cm.ixs[0];
-        let accounts: Vec<_> = ix.accounts.iter().map(|a| (a.pubkey, a.is_signer)).collect();
-        assert_eq!(accounts, vec![(from, false), (account, false), (authority, true)]);
+        let accounts: Vec<_> = ix
+            .accounts
+            .iter()
+            .map(|a| (a.pubkey, a.is_signer))
+            .collect();
+        assert_eq!(
+            accounts,
+            vec![(from, false), (account, false), (authority, true)]
+        );
         assert_eq!(ix.data[1..], 500u64.to_le_bytes());
     }
 }

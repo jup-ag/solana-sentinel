@@ -291,18 +291,35 @@ mod tests {
     #[ignore = "needs Docker (testcontainers); run with --ignored"]
     async fn strict_gate_blocks_restart_takeover_and_other_occurrences() {
         let (conn, _c) = redis_conn().await;
-        let strict = || FleetGate::new(conn.clone(), periods(Duration::from_secs(60)), "test", "pod").strict();
+        let strict = || {
+            FleetGate::new(
+                conn.clone(),
+                periods(Duration::from_secs(60)),
+                "test",
+                "pod",
+            )
+            .strict()
+        };
 
         let alert = build_alert(0);
         assert!(strict().check(&alert).await.unwrap());
         // A retried SET whose first reply was lost: same alert, key already ours.
-        assert!(strict().check(&alert).await.unwrap(), "lost-reply retry suppressed");
+        assert!(
+            strict().check(&alert).await.unwrap(),
+            "lost-reply retry suppressed"
+        );
         // Same pod after a crash before confirm: the replay raises a new alert.
-        assert!(!strict().check(&build_alert(0)).await.unwrap(), "restart took over");
+        assert!(
+            !strict().check(&build_alert(0)).await.unwrap(),
+            "restart took over"
+        );
 
         // Same condition in another tx: the strict key ignores the occurrence.
         let mut other_tx = build_alert(0);
         other_tx.fleet_gate_key = DedupKey::new(RULE, "other-occurrence".into());
-        assert!(!strict().check(&other_tx).await.unwrap(), "second occurrence sent");
+        assert!(
+            !strict().check(&other_tx).await.unwrap(),
+            "second occurrence sent"
+        );
     }
 }

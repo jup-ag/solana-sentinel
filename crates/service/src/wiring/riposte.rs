@@ -4,19 +4,19 @@
 
 use super::{connect_to_redis_cluster, known_rules};
 use crate::config::SentinelConfig;
-use dedup_gate::fleet_gate::FleetGate;
 use anyhow::{bail, Context};
 use data_source::rpc::build_rpc_client;
+use dedup_gate::fleet_gate::FleetGate;
 use domain::alert::Alert;
 use domain::counter_measure::Trigger;
 use domain::programs::Program;
 use domain::rules::RuleId;
 use riposte::balance::spawn_balance_watch;
 use riposte::blockhash::BlockhashCache;
-use riposte::halt::HaltSwitch;
 use riposte::broadcast::{RpcBroadcaster, SimulateBroadcaster};
 use riposte::config::{BroadcasterConfig, Mode, RiposteConfig, SignerConfig};
 use riposte::fees::PriorityFeeCache;
+use riposte::halt::HaltSwitch;
 use riposte::signer::{KeypairSigner, KmsSigner};
 use riposte::traits::{Broadcaster, TxSigner};
 use riposte::Riposte;
@@ -65,7 +65,10 @@ impl RiposteService {
         // Absent behaves like `enabled = false`: rules may keep riposte = true, nothing is sent.
         let Some(cfg) = config.riposte() else {
             if !rules.is_empty() {
-                warn!(rules = rules.len(), "rules set riposte = true but [riposte] is absent; riposte not started");
+                warn!(
+                    rules = rules.len(),
+                    "rules set riposte = true but [riposte] is absent; riposte not started"
+                );
             }
             return Ok(None);
         };
@@ -82,7 +85,10 @@ impl RiposteService {
         }
         let fleet_url = config.redis().redis_fleet_url.as_deref();
         if cfg.mode == Mode::Live && fleet_url.is_none() {
-            bail!("riposte mode = \"live\" needs redis_fleet_url, so pods never send the same countermeasure twice");
+            bail!(
+                "riposte mode = \"live\" needs redis_fleet_url, so pods never send the same \
+                 countermeasure twice"
+            );
         }
         // Checked even when disabled, so a missing signer fails startup before it's turned on.
         let signer_names = program_signers(cfg, &rules)?;
@@ -107,12 +113,18 @@ impl RiposteService {
                     .context("riposte gate")?;
                 // One key for both modes: halting stops dry run and live alike.
                 let halt_key = format!("{service_name}:riposte:halt");
-                info!(halt_key, "riposte kill switch: SET it in the fleet Redis to stop all countermeasures");
+                info!(
+                    halt_key,
+                    "riposte kill switch: SET it in the fleet Redis to stop all countermeasures"
+                );
                 let halt = HaltSwitch::spawn(conn.clone(), halt_key, cancel.clone(), tracker);
                 (FleetGate::new(conn, periods, &namespace, pod_id), halt)
             }
             None => {
-                warn!("No redis_fleet_url; dry-run riposte dedups within this process only and has no kill switch");
+                warn!(
+                    "No redis_fleet_url; dry-run riposte dedups within this process only and has \
+                     no kill switch"
+                );
                 (FleetGate::in_memory(periods), HaltSwitch::default())
             }
         };
@@ -121,7 +133,10 @@ impl RiposteService {
         let watched = signers
             .iter()
             .filter_map(|(p, s)| {
-                let rule = rules.iter().filter(|r| r.program == *p).min_by_key(|r| (r.name, r.instance))?;
+                let rule = rules
+                    .iter()
+                    .filter(|r| r.program == *p)
+                    .min_by_key(|r| (r.name, r.instance))?;
                 Some((*rule, s.pubkey()))
             })
             .collect();
@@ -173,12 +188,18 @@ fn riposte_rules(
         .map(|(p, r)| {
             // Outcome alerts go to the rule's sinks; without any, nobody would hear of them.
             if r.sinks.is_empty() {
-                bail!("program `{}` rule `{}` has riposte = true but no sinks", p.program, r.label());
+                bail!(
+                    "program `{}` rule `{}` has riposte = true but no sinks",
+                    p.program,
+                    r.label()
+                );
             }
             known
                 .get(&(p.program.as_str(), r.name.as_str(), r.instance.as_deref()))
                 .copied()
-                .with_context(|| format!("program `{}` rule `{}` not validated", p.program, r.label()))
+                .with_context(|| {
+                    format!("program `{}` rule `{}` not validated", p.program, r.label())
+                })
         })
         .collect()
 }

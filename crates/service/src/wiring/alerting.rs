@@ -5,9 +5,6 @@ use crate::config::service::{
     BetterstackSinkConfig, ClickhouseConfig, DiscordConfig, SinkConfig, SlackConfig,
 };
 use crate::config::{ProgramRules, SentinelConfig};
-use dedup_gate::cooldown_gate::CooldownGate;
-use dedup_gate::fleet_gate::FleetGate;
-use dedup_gate::local_gate::LocalGate;
 use alerting::router::Router;
 use alerting::sinks::betterstack::BetterstackSink;
 use alerting::sinks::clickhouse::ClickhouseSink;
@@ -15,6 +12,9 @@ use alerting::sinks::discord::DiscordSink;
 use alerting::sinks::slack::SlackSink;
 use alerting::sinks::stdout::StdoutSink;
 use alerting::sinks::AlertSink;
+use dedup_gate::cooldown_gate::CooldownGate;
+use dedup_gate::fleet_gate::FleetGate;
+use dedup_gate::local_gate::LocalGate;
 use domain::rules::RuleId;
 use domain::sinks::SinkId;
 use redis::aio::ConnectionManager;

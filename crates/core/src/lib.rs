@@ -33,15 +33,14 @@ pub use ::utility;
 pub use cache::{StateCache, UnknownKey};
 pub use deps::{Deps, ProgramDeps};
 pub use domain::alert::{Alert, DedupScope, Severity};
+pub use domain::counter_measure::CounterMeasure;
 pub use domain::programs::Program;
 pub use domain::rules::RuleId;
 pub use observability::slot_tracker::GrpcSlotReader;
 pub use parser::StreamPipeline;
 pub use poll::PollSource;
-pub use domain::counter_measure::CounterMeasure;
 pub use rule::{
-    CounteractCtx, NoConfig, PollCtx, PollRule, RiposteCtx, RuleConfigError, StreamCtx,
-    StreamRule,
+    CounteractCtx, NoConfig, PollCtx, PollRule, RiposteCtx, RuleConfigError, StreamCtx, StreamRule,
 };
 pub use rule_set::{PollRules, StreamRules};
 pub use shipstern_core::{AccountFilter, MemcmpData};

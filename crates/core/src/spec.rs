@@ -590,9 +590,9 @@ mod tests {
     use crate::testing::ix_update;
     use crate::{Alert, CounterMeasure};
     use shipstern::Handler;
-    use std::collections::HashMap;
     use solana_instruction::{AccountMeta, Instruction};
     use solana_pubkey::Pubkey;
+    use std::collections::HashMap;
 
     const PROGRAM: Program = Program::new("test_program");
     const WATCHED: Pubkey = Pubkey::new_from_array([7; 32]);
@@ -699,10 +699,18 @@ mod tests {
             copy.fleet_gate_key.to_string(),
             plain.fleet_gate_key.to_string()
         );
-        let (countered, cm, slot) = riposte_rx.try_recv().expect("counteract ran after evaluate");
+        let (countered, cm, slot) = riposte_rx
+            .try_recv()
+            .expect("counteract ran after evaluate");
         assert_eq!(countered.rule, meteora);
-        assert!(slot.is_some(), "stream triggers carry their slot for the age check");
+        assert!(
+            slot.is_some(),
+            "stream triggers carry their slot for the age check"
+        );
         assert_eq!(cm.ixs[0].accounts[0].pubkey, authority);
-        assert!(riposte_rx.try_recv().is_err(), "uncovered instance must not counteract");
+        assert!(
+            riposte_rx.try_recv().is_err(),
+            "uncovered instance must not counteract"
+        );
     }
 }

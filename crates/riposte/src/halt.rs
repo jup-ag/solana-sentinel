@@ -33,7 +33,11 @@ impl HaltSwitch {
                     () = cancel.cancelled() => return,
                     _ = tick.tick() => {}
                 }
-                match redis::cmd("EXISTS").arg(&key).query_async::<bool>(&mut conn).await {
+                match redis::cmd("EXISTS")
+                    .arg(&key)
+                    .query_async::<bool>(&mut conn)
+                    .await
+                {
                     Ok(halted) => {
                         if flag.swap(halted, Ordering::Relaxed) != halted {
                             error!(halted, key, "riposte kill switch changed");

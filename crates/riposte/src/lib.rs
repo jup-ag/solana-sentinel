@@ -19,8 +19,8 @@ use crate::config::Mode;
 use crate::fees::PriorityFeeCache;
 use crate::halt::HaltSwitch;
 use crate::traits::{Broadcaster, TxSigner};
-use dedup_gate::fleet_gate::FleetGate;
 use anyhow::Context;
+use dedup_gate::fleet_gate::FleetGate;
 use domain::alert::{Alert, Severity};
 use domain::counter_measure::{CounterMeasure, Trigger};
 use domain::programs::Program;
@@ -163,13 +163,17 @@ impl Riposte {
         if let Some(slot) = slot {
             let tip = timeout(
                 RPC_TIMEOUT,
-                self.rpc.get_slot_with_commitment(CommitmentConfig::confirmed()),
+                self.rpc
+                    .get_slot_with_commitment(CommitmentConfig::confirmed()),
             )
             .await;
             match tip {
                 // A replay, or a feed lagging during a real incident: either way a human must know.
                 Ok(Ok(tip)) if tip.saturating_sub(slot) > MAX_TRIGGER_AGE_SLOTS => {
-                    let why = format!("trigger slot {slot} is {} slots behind the tip (replay or feed lag)", tip - slot);
+                    let why = format!(
+                        "trigger slot {slot} is {} slots behind the tip (replay or feed lag)",
+                        tip - slot
+                    );
                     self.report(&alert, &Outcome::NotSent(why)).await;
                     return;
                 }
@@ -191,7 +195,8 @@ impl Riposte {
                 return;
             }
             Err(e) => {
-                self.report(&alert, &Outcome::GateError(format!("{e:#}"))).await;
+                self.report(&alert, &Outcome::GateError(format!("{e:#}")))
+                    .await;
                 return;
             }
         }
@@ -254,11 +259,15 @@ impl Riposte {
 
     /// Sends to every broadcaster at once; `Err` with every error when none accepted.
     async fn broadcast(&self, alert: &Alert, tx: &VersionedTransaction) -> Result<(), String> {
-        let sends = self.broadcasters.iter().map(|b| timeout(RPC_TIMEOUT, b.send(tx)));
+        let sends = self
+            .broadcasters
+            .iter()
+            .map(|b| timeout(RPC_TIMEOUT, b.send(tx)));
         let results = join_all(sends).await;
         let mut errors = Vec::new();
         for (b, result) in self.broadcasters.iter().zip(results) {
-            match result.unwrap_or_else(|_| Err(anyhow::anyhow!("timed out after {RPC_TIMEOUT:?}"))) {
+            match result.unwrap_or_else(|_| Err(anyhow::anyhow!("timed out after {RPC_TIMEOUT:?}")))
+            {
                 Ok(()) => return Ok(()),
                 Err(e) => {
                     warn!(rule = %alert.rule, broadcaster = b.id(), error = ?e, "riposte broadcast failed");
@@ -311,7 +320,9 @@ impl Riposte {
                     };
                 }
                 Ok(Ok(_)) => {}
-                Ok(Err(e)) => warn!(rule = %alert.rule, error = %e, "riposte block height poll failed"),
+                Ok(Err(e)) => {
+                    warn!(rule = %alert.rule, error = %e, "riposte block height poll failed")
+                }
                 Err(_) => warn!(rule = %alert.rule, "riposte block height poll timed out"),
             }
             if sent_at.elapsed() >= REBROADCAST && !self.halt.is_halted() {
@@ -350,19 +361,63 @@ impl Riposte {
     /// Metric for every outcome; an alert on the rule's own sinks for the ones a human must see.
     async fn report(&self, alert: &Alert, outcome: &Outcome) {
         let (name, severity, detail, signature) = match outcome {
-            Outcome::GateError(e) => ("gate_error", Severity::Critical, format!("gate Redis failed, nothing sent: {e}"), None),
-            Outcome::Halted => ("halted", Severity::Warn, "kill switch flipped before broadcast; not sent".into(), None),
+            Outcome::GateError(e) => (
+                "gate_error",
+                Severity::Critical,
+                format!("gate Redis failed, nothing sent: {e}"),
+                None,
+            ),
+            Outcome::Halted => (
+                "halted",
+                Severity::Warn,
+                "kill switch flipped before broadcast; not sent".into(),
+                None,
+            ),
             Outcome::NotSent(why) => ("failed", Severity::Critical, why.clone(), None),
-            Outcome::SimulationFailed(why) => ("simulation_failed", Severity::Critical, format!("dry-run simulation failed: {why}"), None),
-            Outcome::Simulated(sig) => ("simulated", Severity::Info, "dry run, not sent".into(), Some(sig)),
-            Outcome::Landed(sig, slot) => ("landed", Severity::Warn, format!("landed in slot {slot}"), Some(sig)),
-            Outcome::Reverted(sig, err) => ("reverted", Severity::Critical, format!("failed on-chain: {err}"), Some(sig)),
-            Outcome::Expired(sig) => ("expired", Severity::Critical, "not seen landed before its blockhash expired".into(), Some(sig)),
-            Outcome::Unknown(sig) => ("unknown", Severity::Critical, "landing not confirmed (shutdown, tracking timeout or RPC failure); check the signature".into(), Some(sig)),
+            Outcome::SimulationFailed(why) => (
+                "simulation_failed",
+                Severity::Critical,
+                format!("dry-run simulation failed: {why}"),
+                None,
+            ),
+            Outcome::Simulated(sig) => (
+                "simulated",
+                Severity::Info,
+                "dry run, not sent".into(),
+                Some(sig),
+            ),
+            Outcome::Landed(sig, slot) => (
+                "landed",
+                Severity::Warn,
+                format!("landed in slot {slot}"),
+                Some(sig),
+            ),
+            Outcome::Reverted(sig, err) => (
+                "reverted",
+                Severity::Critical,
+                format!("failed on-chain: {err}"),
+                Some(sig),
+            ),
+            Outcome::Expired(sig) => (
+                "expired",
+                Severity::Critical,
+                "not seen landed before its blockhash expired".into(),
+                Some(sig),
+            ),
+            Outcome::Unknown(sig) => (
+                "unknown",
+                Severity::Critical,
+                "landing not confirmed (shutdown, tracking timeout or RPC failure); check the \
+                 signature"
+                    .into(),
+                Some(sig),
+            ),
         };
         record_countermeasure(&alert.rule.to_string(), name);
         match severity {
-            Severity::Critical => error!(rule = %alert.rule, outcome = name, detail, "riposte countermeasure"),
+            Severity::Critical => {
+                error!(rule = %alert.rule, outcome = name, detail, "riposte countermeasure")
+            }
             _ => info!(rule = %alert.rule, outcome = name, detail, "riposte countermeasure"),
         }
         // Retryable failures repeat per occurrence; keyed on the condition, alerting's cooldown
