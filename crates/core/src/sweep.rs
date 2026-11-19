@@ -19,6 +19,7 @@ pub fn spawn_sweep_loops<Ev>(
             continue;
         };
         let id = rule.id;
+        let counteract = rule.counteract.clone();
         let alerts_tx = alerts_tx.clone();
         let cancel_token = cancel_token.clone();
         info!(rule = %id, interval_secs = interval.as_secs(), "Starting periodic sweep");
@@ -33,7 +34,10 @@ pub fn spawn_sweep_loops<Ev>(
                         break;
                     }
                     _ = tick.tick() => {
-                        for alert in sweep() {
+                        for mut alert in sweep() {
+                            if let Some(counteract) = &counteract {
+                                counteract(&mut alert, None);
+                            }
                             forward_alert(alert, None, None, &alerts_tx).await;
                         }
                     }

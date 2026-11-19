@@ -2,7 +2,9 @@
 //! I/O; `build` runs each rule's `build` + `bootstrap` later.
 
 use crate::deps::Deps;
-use crate::rule::{BuiltPollRule, BuiltStreamRule, PollRule, RuleConfigError, StreamRule};
+use crate::rule::{
+    BuiltPollRule, BuiltStreamRule, PollRule, RuleConfigError, StreamRule,
+};
 use crate::subscription::Subscription;
 use crate::{BootstrapCtx, RawRuleMap};
 use config::Value;
@@ -102,7 +104,7 @@ fn validate_stream<R: StreamRule>(
             Box::pin(async move {
                 let mut rule = R::build(cfg, deps)?;
                 rule.bootstrap(ctx).await?;
-                Ok(BuiltStreamRule::new(rule, id, sweep_interval))
+                Ok(BuiltStreamRule::new(rule, id, sweep_interval, ctx.riposte.as_ref()))
             })
         }),
     })
@@ -219,7 +221,7 @@ fn validate_poll<R: PollRule>(
             Box::pin(async move {
                 let mut rule = R::build(cfg, deps)?;
                 rule.bootstrap(ctx).await?;
-                Ok(BuiltPollRule::new(rule, id))
+                Ok(BuiltPollRule::new(rule, id, ctx.riposte.as_ref()))
             })
         }),
     })

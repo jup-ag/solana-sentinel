@@ -187,7 +187,7 @@ mod tests {
                     ..Default::default()
                 }),
                 slot: 7,
-                is_startup: false,
+                ..Default::default()
             })),
             created_at: None,
         }

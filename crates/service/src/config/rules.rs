@@ -14,6 +14,9 @@ pub struct RuleConfig {
     pub instance: Option<String>,
     pub sinks: Vec<SinkId>,
     pub cooldown_period_seconds: Option<u64>,
+    /// Send this rule's countermeasure on-chain (its `counteract`) when Riposte is on.
+    #[serde(default)]
+    pub riposte: bool,
     /// The rule's typed config table; may be omitted for rules that take none.
     #[serde(default)]
     pub config: Value,

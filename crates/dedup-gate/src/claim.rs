@@ -15,7 +15,8 @@ const DELIVERED: &str = "sent";
 #[derive(Clone, Default)]
 pub(crate) struct OpenClaims(Arc<Mutex<HashSet<String>>>);
 
-/// `SET key <owner> NX EXAT ts`. `true` means this process should send.
+/// `SET key <owner> NX EXAT ts`. `true` means this process should send. A key already holding
+/// `owner` is ours: a retried SET whose first reply was lost, or a crash before settling.
 pub(crate) async fn claim(
     conn: &mut impl ConnectionLike,
     open: &OpenClaims,
@@ -52,14 +53,13 @@ async fn try_claim(
     if set.is_some() {
         return Ok(true);
     }
-    // Ours but not open in this process: an earlier run claimed it and died before settling.
     let holder: Option<String> = redis::cmd("GET")
         .arg(key)
         .query_async(conn)
         .await
         .with_context(|| format!("Failed to read claim holder of {key} from Redis"))?;
     if holder.as_deref() == Some(owner) {
-        info!(key, "taking over an unconfirmed claim from a previous run");
+        info!(key, "claim already held by this owner; taking it");
         return Ok(true);
     }
     Ok(false)

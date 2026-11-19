@@ -10,10 +10,6 @@
 //! [`Alert`]: domain::alert::Alert
 //! [`RuleId`]: domain::rules::RuleId
 
-mod claim;
-pub mod cooldown_gate;
-pub mod fleet_gate;
-pub mod local_gate;
 pub mod outbox;
 pub mod router;
 pub mod service;

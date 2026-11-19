@@ -331,8 +331,7 @@ impl WebsocketSource {
                     UpdateOneof::Slot(SubscribeUpdateSlot {
                         slot: info.slot,
                         parent: Some(info.parent),
-                        status: 0,
-                        dead_error: None,
+                        ..Default::default()
                     }),
                 ))
             }
@@ -375,6 +374,7 @@ impl WebsocketSource {
             encoding: Some(UiTransactionEncoding::Base64),
             commitment: Some(commitment),
             max_supported_transaction_version: Some(1),
+            min_context_slot: None,
         };
         for attempt in 1..=TX_FETCH_ATTEMPTS {
             match self.rpc.get_transaction_with_config(&sig, config).await {

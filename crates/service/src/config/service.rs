@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use config::{Config, File, FileFormat};
 use domain::sinks::SinkId;
 use observability::HeartbeatSettings;
+use riposte::config::RiposteConfig;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -18,6 +19,8 @@ pub struct ServiceConfig {
     /// Optional: cooldown gate layers. Both default to on.
     #[serde(default)]
     pub alerting: AlertingConfig,
+    /// Optional: alert-driven transactions. Absent means no countermeasure is sent.
+    pub riposte: Option<RiposteConfig>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

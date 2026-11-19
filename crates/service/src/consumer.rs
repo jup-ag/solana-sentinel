@@ -20,7 +20,9 @@ use shipstern_core::Prefilter;
 use shipstern_slot_parser::SlotParser;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sentinel::refresh::spawn_refresh_loops;
-use solana_sentinel::{BootstrapCtx, StartCtx, StartedProgram, StreamPipeline, ValidatedProgram};
+use solana_sentinel::{
+    BootstrapCtx, RiposteCtx, StartCtx, StartedProgram, StreamPipeline, ValidatedProgram,
+};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -36,9 +38,11 @@ pub struct ConsumerService {
     rpc: Arc<RpcClient>,
     slot_tracker: SlotTracker,
     pod_id: String,
+    riposte: Option<RiposteCtx>,
 }
 
 impl ConsumerService {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: &Arc<SentinelConfig>,
         programs: Vec<ValidatedProgram>,
@@ -47,6 +51,7 @@ impl ConsumerService {
         rpc: Arc<RpcClient>,
         slot_tracker: SlotTracker,
         pod_id: String,
+        riposte: Option<RiposteCtx>,
     ) -> Self {
         Self {
             config: Arc::clone(config),
@@ -56,6 +61,7 @@ impl ConsumerService {
             rpc,
             slot_tracker,
             pod_id,
+            riposte,
         }
     }
 
@@ -70,6 +76,7 @@ impl ConsumerService {
             rpc,
             slot_tracker,
             pod_id,
+            riposte,
         } = self;
 
         if programs.is_empty() {
@@ -86,6 +93,7 @@ impl ConsumerService {
                 rpc,
                 grpc_slot: slot_tracker.reader(),
                 pod_id,
+                riposte,
             },
             alerts_tx,
             cancel_token: cancel_token.clone(),
@@ -109,14 +117,6 @@ impl ConsumerService {
         // The runtime is generic over its source, so the config variant picks the type here.
         match config.data_source() {
             DataSourceConfig::YellowstoneGrpc(c) => {
-                if !c.auto_reconnect {
-                    // yellowstone-grpc-client 13.x runs dedup with slot retention 0 when reconnect
-                    // is off and never prunes sealed slots: memory grows ~60 MB/day until OOM.
-                    warn!(
-                        "auto_reconnect = false leaks memory in the gRPC client; keep it on in \
-                         production"
-                    );
-                }
                 launch.run::<YellowstoneGrpcSource>(
                     YellowstoneGrpcConfig {
                         endpoint: c.endpoint.clone(),
@@ -130,7 +130,6 @@ impl ConsumerService {
                         accept_compression: None,
                         auto_reconnect: c.auto_reconnect,
                         reconnect_max_retries: None,
-                        reconnect_slot_retention: None,
                     },
                     &c.buffer,
                 )

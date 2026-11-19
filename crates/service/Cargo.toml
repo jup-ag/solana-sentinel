@@ -7,11 +7,13 @@ publish.workspace = true
 
 [dependencies]
 alerting = { workspace = true }
+dedup-gate = { workspace = true }
 futures = { workspace = true }
 data-source = { workspace = true }
 domain = { workspace = true }
 solana-sentinel = { workspace = true }
 observability = { workspace = true }
+riposte = { workspace = true }
 
 anyhow = { workspace = true }
 config = { workspace = true }

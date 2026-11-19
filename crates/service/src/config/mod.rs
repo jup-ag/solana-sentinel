@@ -3,6 +3,7 @@ use crate::config::service::{
     AlertingConfig, DataSourceConfig, ObservabilityConfig, RedisConfig, RpcConfig, ServiceConfig,
     SinkConfig,
 };
+use riposte::config::RiposteConfig;
 
 pub mod rules;
 pub mod service;
@@ -57,6 +58,10 @@ impl SentinelConfig {
 
     pub fn alerting(&self) -> &AlertingConfig {
         &self.service.alerting
+    }
+
+    pub fn riposte(&self) -> Option<&RiposteConfig> {
+        self.service.riposte.as_ref()
     }
 }
 

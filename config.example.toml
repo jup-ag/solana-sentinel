@@ -141,3 +141,43 @@ redis_sidecar_url = "redis://localhost:6379"
 # Optional fleet-wide Redis cluster for the fleet gate. Without it the fleet
 # gate still runs, but dedups within this process only.
 redis_fleet_url = "redis://redis-fleet.example:6379"
+
+# Optional. Riposte answers alerts with on-chain transactions.
+# A rule overrides `counteract` to return a CounterMeasure (ordered ixs, sent as one tx) and opts
+# in per deployment with `riposte = true` next to its sinks. Each countermeasure claims its
+# condition (rule + alert key) in the fleet Redis first: one tx per condition per cooldown,
+# across restarts and pods. If Redis errors, or a claim is left unsettled, nothing is sent.
+# mode = "live" requires redis_fleet_url. Live txs are tracked until landed (rebroadcast every 2 s)
+# and every outcome (landed / failed / expired) is sent as an alert on the rule's own sinks.
+# Kill switch: SET <service_name>:riposte:halt 1 in the fleet Redis stops every countermeasure
+# within a second, fleet-wide; DEL it to resume.
+# [riposte]
+# enabled = true                  # false: no rule's counteract runs, rules may keep riposte = true
+# cooldown_seconds = 600          # per condition, from the claim; >= 180 so it outlives landing
+# min_balance_lamports = 50000000 # per program signer; below it, an error log every minute
+# mode = "dry_run"                # dry_run: sign and simulate over [rpc], never send | live
+# CU price: max(EMA50, newest slot) of Triton's percentile getRecentPrioritizationFees on [rpc]
+# (must be a Triton endpoint), refreshed every 2 s.
+# Clamped to [min, max]; max when stale. Sent as a v1 total fee of ceil(price * CU / 1e6) lamports.
+# fee = { percentile_bps = 7500, min_micro_lamports = 10000, max_micro_lamports = 5000000 }
+# allowed_programs = ["<program id a countermeasure may invoke>"]
+#
+# [riposte.programs]
+# Program name (as in rules.toml) → key into [riposte.signers]. Required for every program
+# with a riposte = true rule. That signer is the program's on-chain authority (counteract's
+# `authority`) and pays the fee. One key per program limits a leaked key to that program.
+# perps = "perps_guardian"
+# spl_token = "usdc_freezer"
+#
+# [riposte.signers]
+# Ed25519 key in AWS KMS (key spec ECC_NIST_EDWARDS25519, usage SIGN_VERIFY). The pod
+# needs kms:GetPublicKey and kms:Sign on it; credentials come from the default AWS chain.
+# Each signer needs SOL for fees.
+# perps_guardian = { type = "aws_kms", key_id = "arn:aws:kms:...:key/...", region = "us-east-1" }
+# Local key for devnet and tests:
+# usdc_freezer = { type = "keypair_file", path = "/secrets/usdc_freezer.json" }
+#
+# [[riposte.broadcasters]]        # live mode needs at least one
+# type = "rpc"
+# id = "helius"
+# url = "https://..."

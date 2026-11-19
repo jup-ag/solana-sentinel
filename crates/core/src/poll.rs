@@ -86,7 +86,11 @@ pub fn spawn_poll_loop<S: PollSource>(
                     };
                     for item in items {
                         for rule in &rules {
-                            if let Some(alert) = (rule.evaluate)(&item, &ctx) {
+                            if let Some(mut alert) = (rule.evaluate)(&item, &ctx) {
+                                if let Some(counteract) = &rule.counteract {
+                                    // Polled state is current, never replayed: no age check.
+                                    counteract(&mut alert, None);
+                                }
                                 forward_alert(alert, Some(ctx.slot), None, &alerts_tx).await;
                             }
                         }

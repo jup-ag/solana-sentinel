@@ -6,11 +6,12 @@
 //! the same rules.
 
 pub mod convert;
+pub mod grpc;
 pub mod kafka;
 pub mod matching;
 pub mod rpc;
 pub mod websocket;
 
+pub use grpc::{YellowstoneGrpcConfig, YellowstoneGrpcSource};
 pub use kafka::{KafkaConfig, KafkaSource};
-pub use shipstern_yellowstone_grpc_source::{YellowstoneGrpcConfig, YellowstoneGrpcSource};
 pub use websocket::{WebsocketConfig, WebsocketSource};

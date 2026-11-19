@@ -6,7 +6,8 @@
 //! builds shipstern pipelines and poll loops, and forwards alerts.
 //!
 //! Adding a rule is one file implementing [`StreamRule`] or [`PollRule`], and
-//! one `.register::<Rule>()` line in the program's `spec()`.
+//! one `.register::<Rule>()` line in the program's `spec()`. A rule answers on-chain
+//! by overriding `counteract`; Riposte sends what it returns.
 
 pub mod cache;
 pub mod deps;
@@ -37,7 +38,11 @@ pub use domain::rules::RuleId;
 pub use observability::slot_tracker::GrpcSlotReader;
 pub use parser::StreamPipeline;
 pub use poll::PollSource;
-pub use rule::{NoConfig, PollCtx, PollRule, RuleConfigError, StreamCtx, StreamRule};
+pub use domain::counter_measure::CounterMeasure;
+pub use rule::{
+    CounteractCtx, NoConfig, PollCtx, PollRule, RiposteCtx, RuleConfigError, StreamCtx,
+    StreamRule,
+};
 pub use rule_set::{PollRules, StreamRules};
 pub use shipstern_core::{AccountFilter, MemcmpData};
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
@@ -57,6 +62,8 @@ pub struct BootstrapCtx {
     pub grpc_slot: GrpcSlotReader,
     /// This node's identity (the pod hostname), for rules whose condition is per-node.
     pub pod_id: String,
+    /// `None` when Riposte is off; then no rule's `counteract` runs.
+    pub riposte: Option<RiposteCtx>,
 }
 
 /// Raw per-rule config payloads keyed by rule name and optional instance, straight from `rules.toml`.

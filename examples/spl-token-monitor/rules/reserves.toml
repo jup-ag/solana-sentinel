@@ -6,7 +6,13 @@ program = "spl_token"
 name = "low_balance"
 sinks = ["stdout"]
 cooldown_period_seconds = 3600
+# Send the refill below on-chain; needs [riposte] in config.toml.
+riposte = true
 [rules.config]
-accounts = ["3emsAVdmGKERbHjmGfQ6oZ1e35dkf5iYcS6U4CPKFVaa"]
-min_amount = 1000000000
-poll_interval_seconds = 120
+accounts = ["ACVSKBQmbfHYU8koMUzsihNPyGfvzKF4RPktsCej3Mbu"]
+min_amount = 200000000 
+poll_interval_seconds = 40
+# Countermeasure: top the reserve up from the Riposte signer's ATA of the same mint (fund it).
+# Needs [riposte] with the Token program in allowed_programs. Not safe to land twice:
+# watch only reserves you own.
+refill = { amount = 200000000 }

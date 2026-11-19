@@ -40,7 +40,7 @@ pub fn account_update(
             txn_signature: None,
         }),
         slot,
-        is_startup: false,
+        ..Default::default()
     })
 }
 
@@ -159,6 +159,7 @@ pub fn transaction_update(
                 index: 0,
             }),
             slot,
+            ..Default::default()
         },
         account_keys,
         failed,

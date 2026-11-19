@@ -30,6 +30,7 @@ pub struct FleetGate {
     periods: HashMap<RuleId, Duration>,
     default_ttl: Duration,
     key_prefix: String,
+    strict: bool,
 }
 
 impl FleetGate {
@@ -50,6 +51,7 @@ impl FleetGate {
             periods,
             default_ttl: DEFAULT_TTL,
             key_prefix: format!("{namespace}:alerts:fleet_gate_key"),
+            strict: false,
         }
     }
 
@@ -60,6 +62,7 @@ impl FleetGate {
             periods,
             default_ttl: DEFAULT_TTL,
             key_prefix: "memory".to_string(),
+            strict: false,
         }
     }
 
@@ -69,44 +72,61 @@ impl FleetGate {
         self
     }
 
+    /// For actions that must not repeat: one claim per condition (not per occurrence) for the
+    /// whole period, and an unsettled claim is never taken over, even by its own pod.
+    #[must_use]
+    pub fn strict(mut self) -> Self {
+        self.strict = true;
+        self
+    }
+
     pub async fn check(&mut self, alert: &Alert) -> anyhow::Result<bool> {
         let period = self.periods.get(&alert.rule).unwrap_or(&self.default_ttl);
 
-        // Subtract 1 second so the fleet key never outlives the cooldown key by a boundary
-        // second, which would suppress the first alert after cooldown expiry.
-        let ttl_timestamp = alert
-            .fired_at
-            .timestamp()
-            .saturating_add(period.as_secs() as i64)
-            .sub(1);
+        // Strict: from claim time, since a past EXAT is accepted and expires at once, so an
+        // item that queued past its period would claim nothing. Otherwise from `fired_at`,
+        // minus 1 s so the fleet key never outlives the local cooldown key by a boundary second.
+        let now = chrono::Utc::now().timestamp();
+        let ttl_timestamp = if self.strict {
+            now.saturating_add(period.as_secs() as i64)
+        } else {
+            alert
+                .fired_at
+                .timestamp()
+                .saturating_add(period.as_secs() as i64)
+                .sub(1)
+        };
 
         let key = self.key(alert);
+        let strict = self.strict;
 
         match &mut self.backend {
             Backend::Redis { conn, owner, open } => {
-                claim::claim(conn, open, &key, owner, ttl_timestamp).await
+                let owner = claim_owner(owner, strict, alert);
+                claim::claim(conn, open, &key, &owner, ttl_timestamp).await
             }
-            Backend::Memory(map) => Ok(memory_set_nx(
-                &mut map.lock(),
-                key,
-                ttl_timestamp,
-                alert.fired_at.timestamp(),
-            )),
+            Backend::Memory(map) => Ok(memory_set_nx(&mut map.lock(), key, ttl_timestamp, now)),
         }
     }
 
     pub async fn confirm(&mut self, alert: &Alert) -> anyhow::Result<()> {
         let key = self.key(alert);
+        let strict = self.strict;
         match &mut self.backend {
-            Backend::Redis { conn, owner, open } => claim::confirm(conn, open, &key, owner).await,
+            Backend::Redis { conn, owner, open } => {
+                claim::confirm(conn, open, &key, &claim_owner(owner, strict, alert)).await
+            }
             Backend::Memory(_) => Ok(()),
         }
     }
 
     pub async fn release(&mut self, alert: &Alert) -> anyhow::Result<()> {
         let key = self.key(alert);
+        let strict = self.strict;
         match &mut self.backend {
-            Backend::Redis { conn, owner, open } => claim::release(conn, open, &key, owner).await,
+            Backend::Redis { conn, owner, open } => {
+                claim::release(conn, open, &key, &claim_owner(owner, strict, alert)).await
+            }
             Backend::Memory(map) => {
                 map.lock().remove(&key);
                 Ok(())
@@ -115,7 +135,23 @@ impl FleetGate {
     }
 
     fn key(&self, alert: &Alert) -> String {
-        format!("{}:{}", self.key_prefix, alert.fleet_gate_key())
+        // The local key is the condition alone; the fleet key adds the occurrence (tx, slot).
+        let key = if self.strict {
+            alert.local_gate_key()
+        } else {
+            alert.fleet_gate_key()
+        };
+        format!("{}:{key}", self.key_prefix)
+    }
+}
+
+/// Strict claims are owned by the alert, not the pod: a lost-reply retry still sees its own
+/// claim, while a restarted pod (new alert) never takes one over.
+fn claim_owner(pod: &str, strict: bool, alert: &Alert) -> String {
+    if strict {
+        format!("{pod}:{}", alert.id)
+    } else {
+        pod.to_string()
     }
 }
 
@@ -132,7 +168,7 @@ fn memory_set_nx(map: &mut HashMap<String, i64>, key: String, expiry: i64, now: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use domain::alert::{Alert, DedupScope, HashKey, Severity};
+    use domain::alert::{Alert, DedupKey, DedupScope, HashKey, Severity};
     use domain::programs::Program;
     use domain::rules::RuleId;
     use redis::cluster::ClusterClient;
@@ -249,5 +285,24 @@ mod tests {
             }
         }
         assert_eq!(sent, 1, "exactly one node across the fleet sends");
+    }
+
+    #[tokio::test]
+    #[ignore = "needs Docker (testcontainers); run with --ignored"]
+    async fn strict_gate_blocks_restart_takeover_and_other_occurrences() {
+        let (conn, _c) = redis_conn().await;
+        let strict = || FleetGate::new(conn.clone(), periods(Duration::from_secs(60)), "test", "pod").strict();
+
+        let alert = build_alert(0);
+        assert!(strict().check(&alert).await.unwrap());
+        // A retried SET whose first reply was lost: same alert, key already ours.
+        assert!(strict().check(&alert).await.unwrap(), "lost-reply retry suppressed");
+        // Same pod after a crash before confirm: the replay raises a new alert.
+        assert!(!strict().check(&build_alert(0)).await.unwrap(), "restart took over");
+
+        // Same condition in another tx: the strict key ignores the occurrence.
+        let mut other_tx = build_alert(0);
+        other_tx.fleet_gate_key = DedupKey::new(RULE, "other-occurrence".into());
+        assert!(!strict().check(&other_tx).await.unwrap(), "second occurrence sent");
     }
 }

@@ -584,10 +584,14 @@ fn describe(sub: &Subscription) -> String {
 mod tests {
     use super::*;
     use crate::raw::{RawInstruction, RawInstructionParser};
-    use crate::rule::{BuiltStreamRule, NoConfig, StreamCtx, StreamRule};
+    use crate::rule::{
+        BuiltStreamRule, CounteractCtx, NoConfig, RiposteCtx, StreamCtx, StreamRule,
+    };
     use crate::testing::ix_update;
-    use crate::Alert;
+    use crate::{Alert, CounterMeasure};
     use shipstern::Handler;
+    use std::collections::HashMap;
+    use solana_instruction::{AccountMeta, Instruction};
     use solana_pubkey::Pubkey;
 
     const PROGRAM: Program = Program::new("test_program");
@@ -617,6 +621,21 @@ mod tests {
                     .scope(ctx.tx_scope())
                     .build(),
             )
+        }
+
+        fn counteract(
+            &self,
+            _: &Alert,
+            ctx: &CounteractCtx,
+        ) -> anyhow::Result<Option<CounterMeasure>> {
+            Ok(Some(CounterMeasure {
+                ixs: vec![Instruction::new_with_bytes(
+                    WATCHED,
+                    &[9],
+                    vec![AccountMeta::new(ctx.authority, true)],
+                )],
+                compute_units: 1_000,
+            }))
         }
     }
 
@@ -650,9 +669,17 @@ mod tests {
         ));
 
         let (tx, mut rx) = mpsc::channel(4);
+        let authority = Pubkey::new_unique();
+        let (riposte_tx, mut riposte_rx) = mpsc::channel(4);
+        // Riposte covers only the `meteora` instance; its signer reaches `counteract`.
+        let riposte = RiposteCtx {
+            authorities: HashMap::from([(PROGRAM, authority)]),
+            rules: HashSet::from([meteora]),
+            tx: riposte_tx,
+        };
         let rules = vec![
-            BuiltStreamRule::new(AnyIx, AnyIx::ID, None),
-            BuiltStreamRule::new(AnyIx, meteora, None),
+            BuiltStreamRule::new(AnyIx, AnyIx::ID, None, Some(&riposte)),
+            BuiltStreamRule::new(AnyIx, meteora, None, Some(&riposte)),
         ];
         let handler = RuleHandler::new(rules, tx);
         let update = ix_update(Pubkey::new_unique(), &[WATCHED], vec![1, 2, 3]);
@@ -672,5 +699,10 @@ mod tests {
             copy.fleet_gate_key.to_string(),
             plain.fleet_gate_key.to_string()
         );
+        let (countered, cm, slot) = riposte_rx.try_recv().expect("counteract ran after evaluate");
+        assert_eq!(countered.rule, meteora);
+        assert!(slot.is_some(), "stream triggers carry their slot for the age check");
+        assert_eq!(cm.ixs[0].accounts[0].pubkey, authority);
+        assert!(riposte_rx.try_recv().is_err(), "uncovered instance must not counteract");
     }
 }

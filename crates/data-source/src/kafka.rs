@@ -135,7 +135,7 @@ impl KafkaSource {
                         last_slot = slot;
                         let slot_update = SubscribeUpdate {
                             filters: Vec::new(),
-                            update_oneof: Some(UpdateOneof::Slot(SubscribeUpdateSlot { slot, parent: None, status: 0, dead_error: None })),
+                            update_oneof: Some(UpdateOneof::Slot(SubscribeUpdateSlot { slot, ..Default::default() })),
                             created_at: None,
                         };
                         if let Some(update) = match_update(&current, slot_update) {
@@ -229,9 +229,8 @@ mod tests {
     #[test]
     fn decodes_plain_and_confluent_framed_account_records() {
         let account = SubscribeUpdateAccount {
-            account: None,
             slot: 42,
-            is_startup: false,
+            ..Default::default()
         };
         let body = account.encode_to_vec();
         let plain = decode_record("raw.prog.accounts", &body).unwrap();
