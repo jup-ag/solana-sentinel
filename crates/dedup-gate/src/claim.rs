@@ -1,6 +1,6 @@
 //! Gate keys are claimed before delivery (so racing nodes send once) and settled after it.
-//! A claim holds its owner until confirmed; a failed delivery releases it, and a restarted
-//! process takes over its own unconfirmed claims, which it never finished delivering.
+//! A claim holds its owner until confirmed; a failed delivery releases it. A key already holding
+//! the owner is taken: pod-owned claims after a restart, alert-owned (strict) ones only on retry.
 
 use anyhow::Context;
 use parking_lot::Mutex;
@@ -29,6 +29,10 @@ pub(crate) async fn claim(
         return Ok(false);
     }
     let result = try_claim(conn, key, owner, ttl_timestamp).await;
+    if result.is_err() {
+        // The SET may have applied before the error; best effort, or it blocks until its TTL.
+        let _ = release_if_owner(conn, key, owner).await;
+    }
     if !matches!(result, Ok(true)) {
         open.0.lock().remove(key);
     }
@@ -112,6 +116,14 @@ pub(crate) async fn release(
     if !open.0.lock().remove(key) {
         return Ok(());
     }
+    release_if_owner(conn, key, owner).await
+}
+
+async fn release_if_owner(
+    conn: &mut impl ConnectionLike,
+    key: &str,
+    owner: &str,
+) -> anyhow::Result<()> {
     redis::cmd("EVAL")
         .arg(RELEASE_IF_OWNER)
         .arg(1)

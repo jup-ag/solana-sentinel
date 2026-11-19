@@ -121,7 +121,7 @@ impl RiposteService {
         let watched = signers
             .iter()
             .filter_map(|(p, s)| {
-                let rule = rules.iter().filter(|r| r.program == *p).min_by_key(|r| r.name)?;
+                let rule = rules.iter().filter(|r| r.program == *p).min_by_key(|r| (r.name, r.instance))?;
                 Some((*rule, s.pubkey()))
             })
             .collect();

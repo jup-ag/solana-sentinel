@@ -9,6 +9,8 @@ use solana_instruction::{AccountMeta, Instruction};
 use solana_keypair::Keypair;
 use solana_message::VersionedMessage;
 use solana_pubkey::Pubkey;
+use serde_json::json;
+use solana_rpc_client::api::request::RpcRequest;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sentinel_riposte::blockhash::BlockhashCache;
 use solana_sentinel_riposte::config::Mode;
@@ -75,7 +77,11 @@ async fn counter_measure_is_signed_sent_once_per_condition_and_reported_landed()
             (Program::new("other"), other),
         ]),
         broadcasters: vec![Arc::new(Capture(sent_tx))],
-        rpc: Arc::new(RpcClient::new_mock("succeeds".to_string())),
+        // One-shot tip for the replayed trigger below; later reads get the mock's default 0.
+        rpc: Arc::new(RpcClient::new_mock_with_mocks(
+            "succeeds".to_string(),
+            HashMap::from([(RpcRequest::GetSlot, json!(10_000))]),
+        )),
         blockhash,
         fees,
         allowed_programs: HashSet::from([PROGRAM]),
@@ -91,6 +97,17 @@ async fn counter_measure_is_signed_sent_once_per_condition_and_reported_landed()
         ixs: vec![ix(&[1, 2, 3]), ix(&[4])],
         compute_units: 60_000,
     };
+    // A replayed trigger far behind the tip: reported, never sent.
+    let replayed = Alert::for_rule(RULE).key(["vault-1"]).build();
+    queue_tx.send((replayed, cm.clone(), Some(1))).await.unwrap();
+    let report = tokio::time::timeout(Duration::from_secs(5), alerts_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(report.metadata["riposte"], "failed");
+    assert!(report.message.contains("behind the tip"));
+    assert!(sent_rx.try_recv().is_err(), "replayed trigger sent");
+
     // Same condition seen in two txs (or replayed): the strict gate lets one through.
     for sig in ["tx-a", "tx-b"] {
         let alert = Alert::for_rule(RULE)

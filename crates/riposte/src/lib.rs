@@ -167,9 +167,10 @@ impl Riposte {
             )
             .await;
             match tip {
+                // A replay, or a feed lagging during a real incident: either way a human must know.
                 Ok(Ok(tip)) if tip.saturating_sub(slot) > MAX_TRIGGER_AGE_SLOTS => {
-                    warn!(rule = %alert.rule, slot, tip, "riposte trigger too old (replay or lag); not sent");
-                    record_countermeasure(&rule, "stale");
+                    let why = format!("trigger slot {slot} is {} slots behind the tip (replay or feed lag)", tip - slot);
+                    self.report(&alert, &Outcome::NotSent(why)).await;
                     return;
                 }
                 Ok(Ok(_)) => {}

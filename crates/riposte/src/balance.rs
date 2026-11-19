@@ -67,8 +67,8 @@ pub fn spawn_balance_watch(
                     .meta("lamports", lamports)
                     .key(["riposte", "low_balance", &signer.to_string()])
                     .build();
-                if alerts.send(alert).await.is_err() {
-                    return;
+                if let Err(e) = alerts.send_timeout(alert, READ_TIMEOUT).await {
+                    warn!(%program, %signer, error = %e, "riposte low-balance alert dropped");
                 }
             }
         }
