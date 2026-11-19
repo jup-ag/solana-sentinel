@@ -5,7 +5,7 @@ use chrono::Utc;
 use dedup_gate::cooldown_gate::CooldownGate;
 use domain::alert::Alert;
 use domain::sinks::SinkId;
-use observability::prometheus::metrics::{record_alert, record_alert_suppressed};
+use observability::prometheus::metrics::record_alert;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -264,7 +264,6 @@ impl Dispatcher {
             {
                 self.buffer.push(pending);
             } else {
-                record_alert_suppressed(&pending.alert.rule.to_string());
                 self.forget(pending.alert.id).await;
             }
         }
@@ -288,7 +287,6 @@ impl Dispatcher {
         // Stored before the gate claims it, so a crash in between still re-raises it.
         self.persist(&mut pending).await;
         if !self.gate.should_send(&pending.alert).await {
-            record_alert_suppressed(&pending.alert.rule.to_string());
             if pending.persisted {
                 self.forget(pending.alert.id).await;
             }

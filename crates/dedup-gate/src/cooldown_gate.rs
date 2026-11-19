@@ -31,7 +31,6 @@ impl CooldownGate {
 
     /// Local gate first (repeat of the same alert within its window), then the fleet
     /// gate (already claimed by another node). Fail-open: a Redis error must not lose alerts.
-    /// Callers record the suppression metric.
     pub async fn should_send(&mut self, alert: &Alert) -> bool {
         if let Some(gate) = &mut self.local_gate {
             match gate.check(alert).await {

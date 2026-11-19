@@ -37,23 +37,6 @@ static ALERTS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
     m
 });
 
-/// Alerts suppressed by per-rule cooldown, labeled by rule name.
-static ALERTS_SUPPRESSED_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
-    let m = IntCounterVec::new(
-        Opts::new(
-            "alerts_suppressed_total",
-            "Alerts suppressed by per-rule cooldown, by rule",
-        )
-        .namespace(namespace()),
-        &["rule"],
-    )
-    .expect("invalid alerts_suppressed_total metric");
-    REGISTRY
-        .register(Box::new(m.clone()))
-        .expect("register alerts_suppressed_total");
-    m
-});
-
 /// Riposte countermeasures by rule and outcome: dropped (queue full or shutdown), halted,
 /// suppressed (gate), gate_error, failed (never sent), simulation_failed, simulated, landed,
 /// reverted (failed on-chain), expired, unknown (shut down while tracking).
@@ -150,7 +133,6 @@ static TRACKED_SLOT: LazyLock<IntGaugeVec> = LazyLock::new(|| {
 pub fn init(namespace: &str) {
     let _ = NAMESPACE.set(namespace.to_string());
     LazyLock::force(&ALERTS_TOTAL);
-    LazyLock::force(&ALERTS_SUPPRESSED_TOTAL);
     LazyLock::force(&COUNTERMEASURES_TOTAL);
     LazyLock::force(&RIPOSTE_SIGNER_BALANCE);
     LazyLock::force(&GRPC_EVENTS_TOTAL);
@@ -162,11 +144,6 @@ pub fn init(namespace: &str) {
 /// Increment the alert counter for a given severity
 pub fn record_alert<S: Into<String>>(severity: S) {
     ALERTS_TOTAL.with_label_values(&[&severity.into()]).inc();
-}
-
-/// Increment the suppressed-alert counter for a given rule.
-pub fn record_alert_suppressed(rule: &str) {
-    ALERTS_SUPPRESSED_TOTAL.with_label_values(&[rule]).inc();
 }
 
 /// Count one countermeasure `outcome` for `rule` (see `countermeasures_total`).
