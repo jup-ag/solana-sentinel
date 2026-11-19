@@ -22,7 +22,7 @@ use crate::traits::{Broadcaster, TxSigner};
 use anyhow::Context;
 use dedup_gate::fleet_gate::FleetGate;
 use domain::alert::{Alert, Severity};
-use domain::counter_measure::{CounterMeasure, Trigger};
+use domain::counter_measure::{outcome_alert, CounterMeasure, Trigger};
 use domain::programs::Program;
 use futures::future::join_all;
 use observability::prometheus::metrics::record_countermeasure;
@@ -420,21 +420,13 @@ impl Riposte {
             }
             _ => info!(rule = %alert.rule, outcome = name, detail, "riposte countermeasure"),
         }
-        // Retryable failures repeat per occurrence; keyed on the condition, alerting's cooldown
-        // collapses them. Everything else is unique per trigger, so it's never hidden.
-        let id = if signature.is_none() {
-            alert.local_gate_key().key().to_string()
-        } else {
-            alert.id.to_string()
-        };
-        let report = Alert::for_rule(alert.rule)
-            .severity(severity)
-            .message(format!("Riposte countermeasure {name}: {detail}"))
-            .meta("riposte", name)
-            .meta("trigger", alert.id)
-            .meta_opt("signature", signature)
-            .key(["riposte", name, &id])
-            .build();
+        let report = outcome_alert(
+            alert,
+            name,
+            severity,
+            &detail,
+            signature.map(ToString::to_string),
+        );
         if let Err(e) = self.alerts.send_timeout(report, REPORT_TIMEOUT).await {
             warn!(rule = %alert.rule, error = %e, "riposte outcome alert dropped");
         }

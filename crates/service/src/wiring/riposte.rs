@@ -49,54 +49,30 @@ impl RiposteService {
         self.ctx
     }
 
-    /// `None` when Riposte is off or no rule has `riposte = true`. Outcome alerts go to `alerts`.
+    /// Connects what [`Self::validate`] planned: signers, gate, kill switch. Outcome alerts go
+    /// to `alerts`.
     #[allow(clippy::too_many_arguments)]
     pub async fn build(
+        plan: RipostePlan<'_>,
         config: &SentinelConfig,
-        validated: &[ValidatedProgram],
         rpc: &Arc<RpcClient>,
         alerts: mpsc::Sender<Alert>,
         pod_id: &str,
         service_name: &str,
         cancel: &CancellationToken,
         tracker: &TaskTracker,
-    ) -> anyhow::Result<Option<Self>> {
-        let rules = riposte_rules(config, validated)?;
-        // Absent behaves like `enabled = false`: rules may keep riposte = true, nothing is sent.
-        let Some(cfg) = config.riposte() else {
-            if !rules.is_empty() {
-                warn!(
-                    rules = rules.len(),
-                    "rules set riposte = true but [riposte] is absent; riposte not started"
-                );
-            }
-            return Ok(None);
+    ) -> anyhow::Result<Self> {
+        let RipostePlan {
+            cfg,
+            rules,
+            signer_names,
+            broadcasters,
+        } = plan;
+        let broadcasters = match cfg.mode {
+            Mode::DryRun => vec![Arc::new(SimulateBroadcaster::new(Arc::clone(rpc))) as _],
+            Mode::Live => broadcasters,
         };
-        let fee = cfg.fee;
-        if !(1..=10_000).contains(&fee.percentile_bps)
-            || fee.min_micro_lamports > fee.max_micro_lamports
-        {
-            bail!("[riposte.fee] needs percentile_bps in 1..=10000 and min_micro_lamports <= max");
-        }
-        // The claim must outlive landing (sign + up to a blockhash lifetime of rebroadcasts), or
-        // another pod could claim the same condition while the first tx is still in flight.
-        if cfg.cooldown_seconds < MIN_COOLDOWN_SECONDS {
-            bail!("[riposte] cooldown_seconds must be >= {MIN_COOLDOWN_SECONDS}");
-        }
         let fleet_url = config.redis().redis_fleet_url.as_deref();
-        if cfg.mode == Mode::Live && fleet_url.is_none() {
-            bail!(
-                "riposte mode = \"live\" needs redis_fleet_url, so pods never send the same \
-                 countermeasure twice"
-            );
-        }
-        // Checked even when disabled, so a missing signer fails startup before it's turned on.
-        let signer_names = program_signers(cfg, &rules)?;
-        if !cfg.enabled || rules.is_empty() {
-            info!(enabled = cfg.enabled, "riposte not started");
-            return Ok(None);
-        }
-
         let signers = build_signers(cfg, &signer_names).await?;
         let cooldown = Duration::from_secs(cfg.cooldown_seconds);
         let periods = rules.iter().map(|rule| (*rule, cooldown)).collect();
@@ -157,7 +133,7 @@ impl RiposteService {
         let riposte = Riposte {
             mode: cfg.mode,
             signers,
-            broadcasters: build_broadcasters(cfg, rpc)?,
+            broadcasters,
             rpc: Arc::clone(rpc),
             blockhash: BlockhashCache::spawn(Arc::clone(rpc), cancel.clone(), tracker),
             fees: PriorityFeeCache::spawn(cfg.fee, Arc::clone(rpc), cancel.clone(), tracker),
@@ -166,13 +142,73 @@ impl RiposteService {
             halt,
             alerts,
         };
-        Ok(Some(Self {
+        Ok(Self {
             riposte,
             queue,
             ctx,
             cancel: cancel.clone(),
+        })
+    }
+
+    /// Every `[riposte]` check that needs no network, so `check` mode catches them too.
+    /// `None` when Riposte is off or no rule has `riposte = true`.
+    pub fn validate<'a>(
+        config: &'a SentinelConfig,
+        validated: &[ValidatedProgram],
+    ) -> anyhow::Result<Option<RipostePlan<'a>>> {
+        let rules = riposte_rules(config, validated)?;
+        // Absent behaves like `enabled = false`: rules may keep riposte = true, nothing is sent.
+        let Some(cfg) = config.riposte() else {
+            if !rules.is_empty() {
+                warn!(
+                    rules = rules.len(),
+                    "rules set riposte = true but [riposte] is absent; riposte not started"
+                );
+            }
+            return Ok(None);
+        };
+        let fee = cfg.fee;
+        if !(1..=10_000).contains(&fee.percentile_bps)
+            || fee.min_micro_lamports > fee.max_micro_lamports
+        {
+            bail!("[riposte.fee] needs percentile_bps in 1..=10000 and min_micro_lamports <= max");
+        }
+        // The claim must outlive landing (sign + up to a blockhash lifetime of rebroadcasts), or
+        // another pod could claim the same condition while the first tx is still in flight.
+        if cfg.cooldown_seconds < MIN_COOLDOWN_SECONDS {
+            bail!("[riposte] cooldown_seconds must be >= {MIN_COOLDOWN_SECONDS}");
+        }
+        if cfg.mode == Mode::Live && config.redis().redis_fleet_url.is_none() {
+            bail!(
+                "riposte mode = \"live\" needs redis_fleet_url, so pods never send the same \
+                 countermeasure twice"
+            );
+        }
+        // Checked even when disabled, so a missing signer fails startup before it's turned on.
+        let signer_names = program_signers(cfg, &rules)?;
+        if !cfg.enabled || rules.is_empty() {
+            info!(enabled = cfg.enabled, "riposte not started");
+            return Ok(None);
+        }
+        if cfg.mode == Mode::Live && cfg.broadcasters.is_empty() {
+            bail!("riposte mode = \"live\" needs at least one [[riposte.broadcasters]]");
+        }
+        Ok(Some(RipostePlan {
+            cfg,
+            rules,
+            signer_names,
+            broadcasters: live_broadcasters(cfg)?,
         }))
     }
+}
+
+/// What [`RiposteService::validate`] found; [`RiposteService::build`] starts Riposte from it.
+pub struct RipostePlan<'a> {
+    cfg: &'a RiposteConfig,
+    rules: HashSet<RuleId>,
+    signer_names: HashMap<Program, &'a str>,
+    /// Live mode's `[[riposte.broadcasters]]`, parsed (headers included); unused in dry run.
+    broadcasters: Vec<Arc<dyn Broadcaster>>,
 }
 
 /// Rules with `riposte = true`, resolved against the validated ones.
@@ -254,16 +290,7 @@ async fn build_signers(
     Ok(out)
 }
 
-fn build_broadcasters(
-    cfg: &RiposteConfig,
-    rpc: &Arc<RpcClient>,
-) -> anyhow::Result<Vec<Arc<dyn Broadcaster>>> {
-    if cfg.mode == Mode::DryRun {
-        return Ok(vec![Arc::new(SimulateBroadcaster::new(Arc::clone(rpc)))]);
-    }
-    if cfg.broadcasters.is_empty() {
-        bail!("riposte mode = \"live\" needs at least one [[riposte.broadcasters]]");
-    }
+fn live_broadcasters(cfg: &RiposteConfig) -> anyhow::Result<Vec<Arc<dyn Broadcaster>>> {
     cfg.broadcasters
         .iter()
         .map(|b| match b {

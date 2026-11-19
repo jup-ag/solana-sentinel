@@ -56,8 +56,10 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
     let config = Arc::new(SentinelConfig::load()?);
     info!("Configuration loaded");
 
-    // Typed rule config is checked before anything connects; `check` stops here.
+    // Everything that needs no network is checked before anything connects; `check` stops here.
     let programs = validate_programs(&config, opts.programs)?;
+    let (router, cooldowns) = build_alerting_router(&config, &programs)?;
+    let riposte_plan = RiposteService::validate(&config, &programs)?;
     print_program_reports(&programs);
     if std::env::args().nth(1).as_deref() == Some("check") {
         return Ok(());
@@ -75,8 +77,6 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
     let pod_id = extract_pod_id()?;
     info!(pod_id = %pod_id, "Pod ID extracted from environment");
 
-    let (router, cooldowns) = build_alerting_router(&config, &programs)?;
-
     // Sidecar Redis holds per-pod state (slot checkpoint, local gate);
     let redis_sidecar_conn = connect_to_redis(&config.redis().redis_sidecar_url)
         .await
@@ -91,18 +91,23 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
 
     // Before the stream connects, so a bad signer fails fast. Rules feed its queue directly,
     // so alerting's flush never delays a countermeasure; its outcomes come back as alerts.
-    let riposte_ctx = RiposteService::build(
-        &config,
-        &programs,
-        &rpc,
-        alerts_tx.clone(),
-        &pod_id,
-        opts.service_name,
-        &cancel_token,
-        &tracker,
-    )
-    .await?
-    .map(|riposte| riposte.start(&riposte_tracker));
+    let riposte_ctx = match riposte_plan {
+        Some(plan) => {
+            let riposte = RiposteService::build(
+                plan,
+                &config,
+                &rpc,
+                alerts_tx.clone(),
+                &pod_id,
+                opts.service_name,
+                &cancel_token,
+                &tracker,
+            )
+            .await?;
+            Some(riposte.start(&riposte_tracker))
+        }
+        None => None,
+    };
 
     let cooldown_gate = build_cooldown_gate(
         &config,
@@ -139,6 +144,13 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
         &tracker,
     );
 
+    // Before bootstrap: poll and sweep loops (and Riposte's outcomes) alert as soon as they spawn,
+    // and a full channel would time out Riposte's outcome reports.
+    let alerting_service =
+        AlertingService::new(alerts_rx, router, cooldown_gate, alerting_cancel.clone())
+            .with_outbox(outbox);
+    alerting_service.start(&tracker);
+
     // start the consumer service which starts processing messages from grpc + bootstraps any cached state from the rpc
     let consumer_service = ConsumerService::new(
         &config,
@@ -155,12 +167,6 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
         started = consumer_service.start(&tracker) => started.context("Failed to start consumer")?,
         () = cancel_token.cancelled() => warn!("Shutdown requested during startup"),
     }
-
-    // Start the alerting service and send alerts to the clickhouse and slack sinks
-    let alerting_service =
-        AlertingService::new(alerts_rx, router, cooldown_gate, alerting_cancel.clone())
-            .with_outbox(outbox);
-    alerting_service.start(&tracker);
 
     // Wait for shutdown signal (Ctrl+C, SIGTERM) or cancellation token to be triggered
     let reason = wait_for_shutdown(&cancel_token, &signalled).await;

@@ -86,12 +86,12 @@ pub fn spawn_poll_loop<S: PollSource>(
                     };
                     for item in items {
                         for rule in &rules {
-                            if let Some(mut alert) = (rule.evaluate)(&item, &ctx) {
-                                if let Some(counteract) = &rule.counteract {
-                                    // Polled state is current, never replayed: no age check.
-                                    counteract(&mut alert, None);
+                            if let Some(alert) = (rule.evaluate)(&item, &ctx) {
+                                // The fetch slot: a trigger stuck in Riposte's queue expires.
+                                let failed = rule.counteract.as_ref().and_then(|c| c(&alert, Some(ctx.slot)));
+                                for alert in std::iter::once(alert).chain(failed) {
+                                    forward_alert(alert, Some(ctx.slot), None, &alerts_tx).await;
                                 }
-                                forward_alert(alert, Some(ctx.slot), None, &alerts_tx).await;
                             }
                         }
                     }

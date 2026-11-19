@@ -34,11 +34,11 @@ pub fn spawn_sweep_loops<Ev>(
                         break;
                     }
                     _ = tick.tick() => {
-                        for mut alert in sweep() {
-                            if let Some(counteract) = &counteract {
-                                counteract(&mut alert, None);
+                        for alert in sweep() {
+                            let failed = counteract.as_ref().and_then(|c| c(&alert, None));
+                            for alert in std::iter::once(alert).chain(failed) {
+                                forward_alert(alert, None, None, &alerts_tx).await;
                             }
-                            forward_alert(alert, None, None, &alerts_tx).await;
                         }
                     }
                 }

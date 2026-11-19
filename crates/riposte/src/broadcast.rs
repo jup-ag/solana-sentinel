@@ -1,7 +1,9 @@
 use crate::traits::Broadcaster;
 use anyhow::{bail, Context};
 use async_trait::async_trait;
-use solana_rpc_client::api::config::{RpcSendTransactionConfig, RpcSimulateTransactionConfig};
+use solana_rpc_client::api::config::{
+    CommitmentConfig, RpcSendTransactionConfig, RpcSimulateTransactionConfig,
+};
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_transaction::versioned::VersionedTransaction;
 use std::sync::Arc;
@@ -56,6 +58,8 @@ impl Broadcaster for SimulateBroadcaster {
     async fn send(&self, tx: &VersionedTransaction) -> anyhow::Result<()> {
         let config = RpcSimulateTransactionConfig {
             sig_verify: true,
+            // The blockhash cache reads `confirmed`; the client default (`finalized`) lacks it.
+            commitment: Some(CommitmentConfig::confirmed()),
             ..Default::default()
         };
         let sim = self

@@ -712,5 +712,18 @@ mod tests {
             riposte_rx.try_recv().is_err(),
             "uncovered instance must not counteract"
         );
+
+        // Queue gone: the trigger still goes out, then a failure keyed apart from it.
+        drop(riposte_rx);
+        handler.handle(&event, &update).await.unwrap();
+        assert_eq!(rx.try_recv().unwrap().rule, AnyIx::ID);
+        let trigger = rx.try_recv().unwrap();
+        let failed = rx.try_recv().expect("failure alert forwarded");
+        assert_eq!(failed.rule, meteora);
+        assert_eq!(failed.metadata["riposte"], "failed");
+        assert_ne!(
+            failed.local_gate_key.to_string(),
+            trigger.local_gate_key.to_string()
+        );
     }
 }

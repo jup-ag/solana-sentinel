@@ -2,7 +2,7 @@
 # Runs an example deployment with its own config and rules.
 #   scripts/run_example.sh spl-token-monitor          # run it
 #   scripts/run_example.sh spl-token-monitor check    # validate config only, connects nowhere
-# Config: $CONFIG_FILE, else ./config.toml, else the example's. Rules: always the example's.
+# Config: $CONFIG_FILE, else ./config.toml, else config.example.toml. Rules: always the example's.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

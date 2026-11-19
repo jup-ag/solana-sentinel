@@ -5,8 +5,8 @@ use crate::deps::Deps;
 use crate::subscription::Subscription;
 use crate::BootstrapCtx;
 use async_trait::async_trait;
-use domain::alert::{Alert, DedupScope};
-use domain::counter_measure::{CounterMeasure, Trigger};
+use domain::alert::{Alert, DedupScope, Severity};
+use domain::counter_measure::{outcome_alert, CounterMeasure, Trigger};
 use domain::programs::Program;
 use domain::rules::RuleId;
 use observability::prometheus::metrics::record_countermeasure;
@@ -154,9 +154,9 @@ pub struct RiposteCtx {
 pub type StreamEvalFn<Ev> = Arc<dyn Fn(&Ev, &StreamCtx) -> Option<Alert> + Send + Sync>;
 pub type SweepFn = Arc<dyn Fn() -> Vec<Alert> + Send + Sync>;
 pub type PollEvalFn<It> = Arc<dyn Fn(&It, &PollCtx) -> Option<Alert> + Send + Sync>;
-/// Runs the rule's `counteract` on a fired alert and queues the result to Riposte; when that
-/// fails, marks the alert (`riposte` meta) before it's forwarded. Takes the stream event's slot.
-pub type CounteractFn = Arc<dyn Fn(&mut Alert, Option<u64>) + Send + Sync>;
+/// Runs the rule's `counteract` on a fired alert (with its observed slot) and queues the result to
+/// Riposte. When that fails, returns a failure alert for the caller to forward after the trigger.
+pub type CounteractFn = Arc<dyn Fn(&Alert, Option<u64>) -> Option<Alert> + Send + Sync>;
 
 /// A bootstrapped stream rule with its type erased; the handler and the sweep loop share it.
 pub struct BuiltStreamRule<Ev> {
@@ -248,27 +248,31 @@ fn counteract_fn<R: Send + Sync + 'static>(
     };
     let tx = r.tx.clone();
     let rule = Arc::clone(rule);
-    Some(Arc::new(move |alert: &mut Alert, slot: Option<u64>| {
+    Some(Arc::new(move |alert: &Alert, slot: Option<u64>| {
         let not_sent = match call(&rule, alert, &ctx) {
             Ok(Some(cm)) if !cm.ixs.is_empty() => match tx.try_send((alert.clone(), cm, slot)) {
-                Ok(()) => return,
+                Ok(()) => return None,
                 Err(e) => {
                     warn!(rule = %alert.rule, error = %e, "riposte queue unavailable; countermeasure dropped");
                     record_countermeasure(&alert.rule.to_string(), "dropped");
                     format!("riposte queue unavailable: {e}")
                 }
             },
-            Ok(_) => return,
+            Ok(_) => return None,
             Err(e) => {
                 error!(rule = %alert.rule, error = ?e, "counteract failed; no countermeasure");
                 record_countermeasure(&alert.rule.to_string(), "failed");
                 format!("counteract failed: {e:#}")
             }
         };
-        // On the alert that goes out next, so the rule's sinks see protection didn't run.
-        alert
-            .metadata
-            .insert("riposte".into(), format!("not sent: {not_sent}"));
+        // Keyed apart from the trigger, which its cooldown may suppress; same shape as Riposte's own.
+        Some(outcome_alert(
+            alert,
+            "failed",
+            Severity::Critical,
+            &not_sent,
+            None,
+        ))
     }))
 }
 

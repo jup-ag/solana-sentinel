@@ -264,7 +264,7 @@ impl Dispatcher {
             {
                 self.buffer.push(pending);
             } else {
-                record_alert_suppressed(pending.alert.rule.name);
+                record_alert_suppressed(&pending.alert.rule.to_string());
                 self.forget(pending.alert.id).await;
             }
         }
@@ -288,7 +288,7 @@ impl Dispatcher {
         // Stored before the gate claims it, so a crash in between still re-raises it.
         self.persist(&mut pending).await;
         if !self.gate.should_send(&pending.alert).await {
-            record_alert_suppressed(pending.alert.rule.name);
+            record_alert_suppressed(&pending.alert.rule.to_string());
             if pending.persisted {
                 self.forget(pending.alert.id).await;
             }
