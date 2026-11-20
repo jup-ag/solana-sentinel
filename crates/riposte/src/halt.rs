@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 const REFRESH: Duration = Duration::from_secs(1);
 
@@ -28,6 +28,7 @@ impl HaltSwitch {
         let flag = Arc::clone(&switch.0);
         tracker.spawn(async move {
             let mut tick = tokio::time::interval(REFRESH);
+            let mut first = true;
             loop {
                 tokio::select! {
                     () = cancel.cancelled() => return,
@@ -39,7 +40,11 @@ impl HaltSwitch {
                     .await
                 {
                     Ok(halted) => {
-                        if flag.swap(halted, Ordering::Relaxed) != halted {
+                        let changed = flag.swap(halted, Ordering::Relaxed) != halted;
+                        // First read replaces the halted-until-read default; not an operator flip.
+                        if std::mem::take(&mut first) {
+                            info!(halted, key, "riposte kill switch initial state");
+                        } else if changed {
                             error!(halted, key, "riposte kill switch changed");
                         }
                     }
