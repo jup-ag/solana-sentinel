@@ -102,7 +102,12 @@ fn validate_stream<R: StreamRule>(
             Box::pin(async move {
                 let mut rule = R::build(cfg, deps)?;
                 rule.bootstrap(ctx).await?;
-                Ok(BuiltStreamRule::new(rule, id, sweep_interval))
+                Ok(BuiltStreamRule::new(
+                    rule,
+                    id,
+                    sweep_interval,
+                    ctx.riposte.as_ref(),
+                ))
             })
         }),
     })
@@ -219,7 +224,7 @@ fn validate_poll<R: PollRule>(
             Box::pin(async move {
                 let mut rule = R::build(cfg, deps)?;
                 rule.bootstrap(ctx).await?;
-                Ok(BuiltPollRule::new(rule, id))
+                Ok(BuiltPollRule::new(rule, id, ctx.riposte.as_ref()))
             })
         }),
     })

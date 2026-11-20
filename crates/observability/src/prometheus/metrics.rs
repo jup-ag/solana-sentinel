@@ -37,20 +37,39 @@ static ALERTS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
     m
 });
 
-/// Alerts suppressed by per-rule cooldown, labeled by rule name.
-static ALERTS_SUPPRESSED_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+/// Riposte countermeasures by rule and outcome: dropped (queue full or shutdown), halted,
+/// suppressed (gate), gate_error, failed (never sent), simulation_failed, simulated, landed,
+/// reverted (failed on-chain), expired, unknown (shut down while tracking).
+static COUNTERMEASURES_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
     let m = IntCounterVec::new(
         Opts::new(
-            "alerts_suppressed_total",
-            "Alerts suppressed by per-rule cooldown, by rule",
+            "countermeasures_total",
+            "Riposte countermeasures, by rule and outcome",
         )
         .namespace(namespace()),
-        &["rule"],
+        &["rule", "outcome"],
     )
-    .expect("invalid alerts_suppressed_total metric");
+    .expect("invalid countermeasures_total metric");
     REGISTRY
         .register(Box::new(m.clone()))
-        .expect("register alerts_suppressed_total");
+        .expect("register countermeasures_total");
+    m
+});
+
+/// Lamports held by each program's Riposte signer, which pays its countermeasures' fees.
+static RIPOSTE_SIGNER_BALANCE: LazyLock<IntGaugeVec> = LazyLock::new(|| {
+    let m = IntGaugeVec::new(
+        Opts::new(
+            "riposte_signer_balance_lamports",
+            "Balance of each program's Riposte signer",
+        )
+        .namespace(namespace()),
+        &["program"],
+    )
+    .expect("invalid riposte_signer_balance_lamports metric");
+    REGISTRY
+        .register(Box::new(m.clone()))
+        .expect("register riposte_signer_balance_lamports");
     m
 });
 
@@ -114,7 +133,8 @@ static TRACKED_SLOT: LazyLock<IntGaugeVec> = LazyLock::new(|| {
 pub fn init(namespace: &str) {
     let _ = NAMESPACE.set(namespace.to_string());
     LazyLock::force(&ALERTS_TOTAL);
-    LazyLock::force(&ALERTS_SUPPRESSED_TOTAL);
+    LazyLock::force(&COUNTERMEASURES_TOTAL);
+    LazyLock::force(&RIPOSTE_SIGNER_BALANCE);
     LazyLock::force(&GRPC_EVENTS_TOTAL);
     LazyLock::force(&RPC_FETCH_STATUS_TOTAL);
     LazyLock::force(&RPC_LATENCY_SECONDS);
@@ -126,9 +146,17 @@ pub fn record_alert<S: Into<String>>(severity: S) {
     ALERTS_TOTAL.with_label_values(&[&severity.into()]).inc();
 }
 
-/// Increment the suppressed-alert counter for a given rule.
-pub fn record_alert_suppressed(rule: &str) {
-    ALERTS_SUPPRESSED_TOTAL.with_label_values(&[rule]).inc();
+/// Count one countermeasure `outcome` for `rule` (see `countermeasures_total`).
+pub fn record_countermeasure(rule: &str, outcome: &str) {
+    COUNTERMEASURES_TOTAL
+        .with_label_values(&[rule, outcome])
+        .inc();
+}
+
+pub fn set_riposte_signer_balance(program: &str, lamports: u64) {
+    RIPOSTE_SIGNER_BALANCE
+        .with_label_values(&[program])
+        .set(i64::try_from(lamports).unwrap_or(i64::MAX));
 }
 
 #[derive(Debug, Clone, Copy)]

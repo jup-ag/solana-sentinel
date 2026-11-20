@@ -15,6 +15,8 @@ use crate::utils::{
 };
 pub use crate::utils::{setup_crypto_provider, setup_tracing_subscriber};
 use crate::validate::validate_programs;
+use crate::wiring::alerting::{build_alerting_router, build_cooldown_gate};
+use crate::wiring::riposte::RiposteService;
 use alerting::outbox::Outbox;
 use alerting::service::AlertingService;
 use anyhow::Context;
@@ -54,9 +56,14 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
     let config = Arc::new(SentinelConfig::load()?);
     info!("Configuration loaded");
 
-    // Typed rule config is checked before anything connects; `check` stops here.
+    // Everything that needs no network is checked before anything connects; `check` stops here.
     let programs = validate_programs(&config, opts.programs)?;
+    let (router, cooldowns) = build_alerting_router(&config, &programs)?;
+    let riposte_plan = RiposteService::validate(&config, &programs)?;
     print_program_reports(&programs);
+    if std::env::args().nth(1).as_deref() == Some("check") {
+        return Ok(());
+    }
 
     let cancel_token = CancellationToken::new();
     let signalled = listen_for_shutdown_signal(&cancel_token);
@@ -70,14 +77,39 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
     let pod_id = extract_pod_id()?;
     info!(pod_id = %pod_id, "Pod ID extracted from environment");
 
-    let (router, cooldowns) = wiring::build_alerting_router(&config, &programs)?;
-
     // Sidecar Redis holds per-pod state (slot checkpoint, local gate);
     let redis_sidecar_conn = connect_to_redis(&config.redis().redis_sidecar_url)
         .await
         .context("Sidecar Redis unavailable")?;
 
-    let cooldown_gate = wiring::build_cooldown_gate(
+    // alerts channel to send alerts from the consumer service to the alerting service(clickhouse, slack and betterstack sinks)
+    let (alerts_tx, alerts_rx) = mpsc::channel(1024);
+    // Riposte's countermeasure tasks, and alerting's own token: on shutdown alerting stops only
+    // after those tasks have reported, so an in-flight outcome ("unknown") still reaches sinks.
+    let riposte_tracker = TaskTracker::new();
+    let alerting_cancel = CancellationToken::new();
+
+    // Before the stream connects, so a bad signer fails fast. Rules feed its queue directly,
+    // so alerting's flush never delays a countermeasure; its outcomes come back as alerts.
+    let riposte_ctx = match riposte_plan {
+        Some(plan) => {
+            let riposte = RiposteService::build(
+                plan,
+                &config,
+                &rpc,
+                alerts_tx.clone(),
+                &pod_id,
+                opts.service_name,
+                &cancel_token,
+                &tracker,
+            )
+            .await?;
+            Some(riposte.start(&riposte_tracker))
+        }
+        None => None,
+    };
+
+    let cooldown_gate = build_cooldown_gate(
         &config,
         cooldowns,
         &redis_sidecar_conn,
@@ -112,8 +144,12 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
         &tracker,
     );
 
-    // alerts channel to send alerts from the consumer service to the alerting service(clickhouse, slack and betterstack sinks)
-    let (alerts_tx, alerts_rx) = mpsc::channel(1024);
+    // Before bootstrap: poll and sweep loops (and Riposte's outcomes) alert as soon as they spawn,
+    // and a full channel would time out Riposte's outcome reports.
+    let alerting_service =
+        AlertingService::new(alerts_rx, router, cooldown_gate, alerting_cancel.clone())
+            .with_outbox(outbox);
+    alerting_service.start(&tracker);
 
     // start the consumer service which starts processing messages from grpc + bootstraps any cached state from the rpc
     let consumer_service = ConsumerService::new(
@@ -124,6 +160,7 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
         Arc::clone(&rpc),
         slot_tracker.clone(),
         pod_id.clone(),
+        riposte_ctx,
     );
     // Bootstrap can take minutes of RPC; a shutdown during it skips straight to the drain.
     tokio::select! {
@@ -131,16 +168,13 @@ pub async fn run(opts: RunOptions) -> anyhow::Result<()> {
         () = cancel_token.cancelled() => warn!("Shutdown requested during startup"),
     }
 
-    // Start the alerting service and send alerts to the clickhouse and slack sinks
-    let alerting_service =
-        AlertingService::new(alerts_rx, router, cooldown_gate, cancel_token.clone())
-            .with_outbox(outbox);
-    alerting_service.start(&tracker);
-
     // Wait for shutdown signal (Ctrl+C, SIGTERM) or cancellation token to be triggered
     let reason = wait_for_shutdown(&cancel_token, &signalled).await;
 
     cancel_token.cancel();
+    riposte_tracker.close();
+    riposte_tracker.wait().await;
+    alerting_cancel.cancel();
     tracker.close();
     tracker.wait().await;
 

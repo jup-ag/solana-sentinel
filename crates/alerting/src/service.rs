@@ -1,8 +1,8 @@
-use crate::cooldown_gate::CooldownGate;
 use crate::outbox::Outbox;
 use crate::router::Router;
 use crate::sinks::Delivery;
 use chrono::Utc;
+use dedup_gate::cooldown_gate::CooldownGate;
 use domain::alert::Alert;
 use domain::sinks::SinkId;
 use observability::prometheus::metrics::record_alert;
@@ -497,9 +497,9 @@ pub(crate) struct Pending {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fleet_gate::FleetGate;
     use crate::sinks::{AlertSink, AlertSinkError};
     use async_trait::async_trait;
+    use dedup_gate::fleet_gate::FleetGate;
     use domain::programs::Program;
     use domain::rules::RuleId;
     use parking_lot::Mutex;

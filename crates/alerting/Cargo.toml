@@ -7,6 +7,7 @@ version.workspace = true
 
 [dependencies]
 observability = { workspace = true }
+dedup-gate = { workspace = true }
 domain = { workspace = true }
 
 

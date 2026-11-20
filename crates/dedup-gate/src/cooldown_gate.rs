@@ -4,7 +4,6 @@
 use crate::fleet_gate::FleetGate;
 use crate::local_gate::LocalGate;
 use domain::alert::Alert;
-use observability::prometheus::metrics::record_alert_suppressed;
 use tracing::{debug, error};
 
 /// Owns both dedup layers. A `None` layer is disabled and always passes.
@@ -38,7 +37,6 @@ impl CooldownGate {
                 Ok(true) => {}
                 Ok(false) => {
                     debug!(rule = %alert.rule, "Alert suppressed by local gate");
-                    record_alert_suppressed(&alert.rule.to_string());
                     return false;
                 }
                 Err(e) => error!("Failed to check local gate: {e:#}"),
@@ -50,7 +48,6 @@ impl CooldownGate {
                 Ok(true) => {}
                 Ok(false) => {
                     debug!(rule = %alert.rule, "Alert suppressed by fleet gate");
-                    record_alert_suppressed(&alert.rule.to_string());
                     // Settle the local claim, or it stays open and blocks every later occurrence.
                     if let Some(local) = &mut self.local_gate {
                         if let Err(e) = local.release(alert).await {

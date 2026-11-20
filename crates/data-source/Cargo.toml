@@ -23,18 +23,17 @@ shipstern-core = { workspace = true }
 shipstern-yellowstone-grpc-source = { workspace = true }
 yellowstone-grpc-proto = { workspace = true }
 solana-pubkey = { workspace = true }
-solana-pubsub-client = "3.1"
+solana-pubsub-client = "4.4.1"
 solana-rpc-client = { workspace = true }
 reqwest-rpc = { workspace = true }
-solana-rpc-client-api = "3.1"
+solana-rpc-client-api = "4.4.1"
 solana-account-decoder-client-types = { workspace = true }
 solana-commitment-config = "3.1.1"
-# 3.5+ moves to wincode 0.6, which solana-transaction 4.1 can't use.
-solana-signature = "~3.4"
-solana-transaction-status-client-types = "3.1"
-solana-message = "~4.4.1"
-solana-transaction = { version = "~4.1", features = ["wincode"] }
-wincode = "0.5"
+solana-signature = { workspace = true }
+solana-transaction-status-client-types = "4.4.1"
+solana-message = { workspace = true }
+solana-transaction = { workspace = true }
+wincode = "0.6"
 
 [lints]
 workspace = true

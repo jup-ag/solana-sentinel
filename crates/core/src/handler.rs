@@ -52,15 +52,22 @@ impl<Ev: Send + Sync, R: StreamInput> Handler<Ev, R> for RuleHandler<Ev> {
         let ctx = raw.stream_ctx();
         for rule in self.rules.iter() {
             if let Some(mut alert) = (rule.evaluate)(value, &ctx) {
+                // Before the slot hold, so Riposte's copy never holds the checkpoint.
+                let failed = rule
+                    .counteract
+                    .as_ref()
+                    .and_then(|c| c(&alert, Some(ctx.slot)));
                 // Stream alerts only: a replay from the checkpoint can re-raise them.
                 alert.slot_hold = Some(SlotHold::new(ctx.slot));
-                forward_alert(
-                    alert,
-                    Some(ctx.slot),
-                    ctx.tx_sig.as_deref(),
-                    &self.alerts_tx,
-                )
-                .await;
+                for alert in std::iter::once(alert).chain(failed) {
+                    forward_alert(
+                        alert,
+                        Some(ctx.slot),
+                        ctx.tx_sig.as_deref(),
+                        &self.alerts_tx,
+                    )
+                    .await;
+                }
             }
         }
         Ok(())
