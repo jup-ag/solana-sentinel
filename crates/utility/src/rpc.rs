@@ -154,7 +154,8 @@ where
             }
             Err(e) => {
                 record_rpc_fetch_status(method, RpcFetchStatus::Failure);
-                warn!(method, attempt, error = %e, "RPC request failed, retrying after {:?}", backoff);
+                let error = crate::redact::redact_urls(&e.to_string());
+                warn!(method, attempt, %error, "RPC request failed, retrying after {:?}", backoff);
                 last_err = Some(e);
                 sleep(backoff).await;
                 backoff *= 2;
@@ -164,7 +165,7 @@ where
 
     let error = last_err
         .as_ref()
-        .map(|e| format!("{:?}", e))
+        .map(|e| crate::redact::redact_urls(&format!("{e:?}")))
         .unwrap_or_else(|| "unknown error".to_string());
 
     Err(anyhow!(error)).context(format!("exhausted retries for RPC method {method}"))
