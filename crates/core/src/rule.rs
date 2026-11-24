@@ -5,15 +5,19 @@ use crate::deps::Deps;
 use crate::subscription::Subscription;
 use crate::BootstrapCtx;
 use async_trait::async_trait;
-use domain::alert::{Alert, DedupScope};
+use domain::alert::{Alert, DedupScope, Severity};
+use domain::counter_measure::{outcome_alert, CounterMeasure, Trigger};
 use domain::programs::Program;
 use domain::rules::RuleId;
+use observability::prometheus::metrics::record_countermeasure;
 use serde::de::DeserializeOwned;
 use solana_pubkey::Pubkey;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
+use tokio::sync::mpsc;
+use tracing::{error, warn};
 
 const TX_SIG_UNAVAILABLE: &str = "NOT_AVAILABLE";
 
@@ -80,6 +84,18 @@ pub trait StreamRule: Sized + Send + Sync + 'static {
     fn sweep(&self) -> Vec<Alert> {
         Vec::new()
     }
+
+    /// On-chain response to this rule's alert; called right after `evaluate` or `sweep` fires,
+    /// only when Riposte is on and the rule has `riposte = true`. Riposte sends one per
+    /// condition per cooldown, but a crash or failover can repeat one: ixs must be safe to
+    /// land twice (rejected or a no-op on repeat, e.g. pause when already paused).
+    fn counteract(
+        &self,
+        _alert: &Alert,
+        _ctx: &CounteractCtx,
+    ) -> anyhow::Result<Option<CounterMeasure>> {
+        Ok(None)
+    }
 }
 
 /// A rule fed by a poll loop: `accounts()` are fetched on a cadence and parsed
@@ -105,17 +121,51 @@ pub trait PollRule: Sized + Send + Sync + 'static {
     }
 
     fn evaluate(&self, item: &Self::Item, ctx: &PollCtx) -> Option<Alert>;
+
+    /// Same as [`StreamRule::counteract`].
+    fn counteract(
+        &self,
+        _alert: &Alert,
+        _ctx: &CounteractCtx,
+    ) -> anyhow::Result<Option<CounterMeasure>> {
+        Ok(None)
+    }
+}
+
+/// What the framework knows when it calls `counteract`, like [`StreamCtx`] for `evaluate`.
+#[derive(Debug, Clone, Copy)]
+pub struct CounteractCtx {
+    /// This program's Riposte signer: the only signer the ixs may require; it also pays the
+    /// fee. shortcut: one signer per tx (`compose` rejects more); a Vec once multi-signer lands.
+    pub authority: Pubkey,
+}
+
+/// `BootstrapCtx::riposte`; `None` when Riposte is off.
+#[derive(Debug, Clone)]
+pub struct RiposteCtx {
+    /// Per program: its Riposte signer, the rules' [`CounteractCtx::authority`].
+    pub authorities: HashMap<Program, Pubkey>,
+    /// Rules with `riposte = true`; `counteract` runs for these only.
+    pub rules: HashSet<RuleId>,
+    /// Riposte's queue; the alert rides along for its dedup key and the signer.
+    pub tx: mpsc::Sender<Trigger>,
 }
 
 pub type StreamEvalFn<Ev> = Arc<dyn Fn(&Ev, &StreamCtx) -> Option<Alert> + Send + Sync>;
 pub type SweepFn = Arc<dyn Fn() -> Vec<Alert> + Send + Sync>;
 pub type PollEvalFn<It> = Arc<dyn Fn(&It, &PollCtx) -> Option<Alert> + Send + Sync>;
+/// Runs the rule's `counteract` on a fired alert (with its observed slot) and queues the result to
+/// Riposte. When that fails, returns a failure alert for the caller to forward after the trigger.
+pub type CounteractFn = Arc<dyn Fn(&Alert, Option<u64>) -> Option<Alert> + Send + Sync>;
 
 /// A bootstrapped stream rule with its type erased; the handler and the sweep loop share it.
 pub struct BuiltStreamRule<Ev> {
     pub id: RuleId,
     pub evaluate: StreamEvalFn<Ev>,
     pub sweep: Option<(Duration, SweepFn)>,
+    /// `Some` when Riposte runs and the rule has `riposte = true`; call it right after
+    /// `evaluate` / `sweep` fires, before the alert is forwarded.
+    pub counteract: Option<CounteractFn>,
 }
 
 // Derived `Clone` would demand `Ev: Clone`; only the `Arc`s are cloned.
@@ -125,6 +175,7 @@ impl<Ev> Clone for BuiltStreamRule<Ev> {
             id: self.id,
             evaluate: Arc::clone(&self.evaluate),
             sweep: self.sweep.clone(),
+            counteract: self.counteract.clone(),
         }
     }
 }
@@ -135,9 +186,11 @@ impl<Ev: Send + Sync + 'static> BuiltStreamRule<Ev> {
         rule: R,
         id: RuleId,
         sweep_interval: Option<Duration>,
+        riposte: Option<&RiposteCtx>,
     ) -> Self {
         let rule = Arc::new(rule);
         let eval = Arc::clone(&rule);
+        let counteract = counteract_fn(riposte, id, &rule, StreamRule::counteract);
         Self {
             id,
             evaluate: Arc::new(move |ev: &Ev, ctx: &StreamCtx| {
@@ -152,6 +205,7 @@ impl<Ev: Send + Sync + 'static> BuiltStreamRule<Ev> {
                 });
                 (interval, sweeper)
             }),
+            counteract,
         }
     }
 }
@@ -160,18 +214,66 @@ impl<Ev: Send + Sync + 'static> BuiltStreamRule<Ev> {
 pub struct BuiltPollRule<It> {
     pub id: RuleId,
     pub evaluate: PollEvalFn<It>,
+    /// Same as [`BuiltStreamRule::counteract`].
+    pub counteract: Option<CounteractFn>,
 }
 
 impl<It: Send + Sync + 'static> BuiltPollRule<It> {
     /// `id` is `R::ID` plus the configured instance; every alert the rule raises carries it.
-    pub fn new<R: PollRule<Item = It>>(rule: R, id: RuleId) -> Self {
+    pub fn new<R: PollRule<Item = It>>(rule: R, id: RuleId, riposte: Option<&RiposteCtx>) -> Self {
+        let rule = Arc::new(rule);
+        let counteract = counteract_fn(riposte, id, &rule, PollRule::counteract);
         Self {
             id,
             evaluate: Arc::new(move |item: &It, ctx: &PollCtx| {
                 rule.evaluate(item, ctx).map(|a| a.for_instance(id))
             }),
+            counteract,
         }
     }
+}
+
+/// `rule`'s `counteract` wired to Riposte's queue, or `None` when Riposte doesn't cover `id`.
+/// Never blocks, and the alert goes out regardless of what `counteract` does.
+fn counteract_fn<R: Send + Sync + 'static>(
+    riposte: Option<&RiposteCtx>,
+    id: RuleId,
+    rule: &Arc<R>,
+    call: fn(&R, &Alert, &CounteractCtx) -> anyhow::Result<Option<CounterMeasure>>,
+) -> Option<CounteractFn> {
+    let r = riposte.filter(|r| r.rules.contains(&id))?;
+    // Startup requires a signer for every responding rule's program.
+    let ctx = CounteractCtx {
+        authority: *r.authorities.get(&id.program)?,
+    };
+    let tx = r.tx.clone();
+    let rule = Arc::clone(rule);
+    Some(Arc::new(move |alert: &Alert, slot: Option<u64>| {
+        let not_sent = match call(&rule, alert, &ctx) {
+            Ok(Some(cm)) if !cm.ixs.is_empty() => match tx.try_send((alert.clone(), cm, slot)) {
+                Ok(()) => return None,
+                Err(e) => {
+                    warn!(rule = %alert.rule, error = %e, "riposte queue unavailable; countermeasure dropped");
+                    record_countermeasure(&alert.rule.to_string(), "dropped");
+                    format!("riposte queue unavailable: {e}")
+                }
+            },
+            Ok(_) => return None,
+            Err(e) => {
+                error!(rule = %alert.rule, error = ?e, "counteract failed; no countermeasure");
+                record_countermeasure(&alert.rule.to_string(), "failed");
+                format!("counteract failed: {e:#}")
+            }
+        };
+        // Keyed apart from the trigger, which its cooldown may suppress; same shape as Riposte's own.
+        Some(outcome_alert(
+            alert,
+            "failed",
+            Severity::Critical,
+            &not_sent,
+            None,
+        ))
+    }))
 }
 
 /// Config for rules that take none; accepts an empty or absent `[rules.config]`.

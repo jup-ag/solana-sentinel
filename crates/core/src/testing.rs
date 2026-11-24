@@ -45,6 +45,7 @@ pub fn account_update(pubkey: Pubkey, owner: Pubkey, data: Vec<u8>) -> AccountUp
         }),
         slot: 1,
         is_startup: false,
+        ..Default::default()
     }
 }
 

@@ -30,6 +30,7 @@ tracing = { workspace = true }
 [dev-dependencies]
 # Enables the `testing` helpers for this crate's own tests.
 solana-sentinel = { path = ".", features = ["testing"] }
+solana-instruction = { workspace = true }
 
 [features]
 # Fixture helpers for rule tests: `interface = { workspace = true, features = ["testing"] }` in dev-dependencies.

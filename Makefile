@@ -1,6 +1,6 @@
 .PHONY: help lint fmt fmt-check clippy ensure-nightly \
         ch ch-query ch-migrate ch-migrations \
-        run-tests run-tests-integration
+        run-tests run-tests-integration run-example
 
 # ---- config ----------------------------------------------------------------
 CARGO              ?= cargo
@@ -118,5 +118,8 @@ run-tests: ## Run the workspace test suite
 	@$(CARGO) test --workspace
 	@printf "Tests completed\n"
 
-run-tests-integration: ## Run the Redis-backed alerting tests (needs Docker)
-	@$(CARGO) test -p solana-sentinel-alerting -- --ignored --nocapture
+run-tests-integration: ## Run the Redis-backed alerting and gate tests (needs Docker)
+	@$(CARGO) test -p solana-sentinel-alerting -p solana-sentinel-dedup-gate -- --ignored --nocapture
+
+run-example: ## Run an example: make run-example EX=spl-token-monitor [ARGS=check]
+	@scripts/run_example.sh $(EX) $(ARGS)

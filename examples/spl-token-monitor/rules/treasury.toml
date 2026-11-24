@@ -10,11 +10,15 @@ program = "spl_token"
 name = "large_transfer"
 sinks = ["stdout"]
 cooldown_period_seconds = 60
+# Send the countermeasure below on-chain; needs [riposte] in config.toml.
+# riposte = true
 [rules.config]
 # USDC treasury-style token accounts to watch as the transfer source.
 accounts = ["3emsAVdmGKERbHjmGfQ6oZ1e35dkf5iYcS6U4CPKFVaa"]
 # Raw units: USDC has 6 decimals, so this is 1,000,000 USDC.
-min_amount = 1000000000000
+min_amount = 1_000_000_000000
+# Countermeasure: freeze the destination. The Riposte signer must be this mint's freeze authority.
+# freeze = { mint = "<mint of the watched accounts>" }
 
 [[rules]]
 program = "spl_token"

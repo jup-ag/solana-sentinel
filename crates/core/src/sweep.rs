@@ -19,6 +19,7 @@ pub fn spawn_sweep_loops<Ev>(
             continue;
         };
         let id = rule.id;
+        let counteract = rule.counteract.clone();
         let alerts_tx = alerts_tx.clone();
         let cancel_token = cancel_token.clone();
         info!(rule = %id, interval_secs = interval.as_secs(), "Starting periodic sweep");
@@ -34,7 +35,10 @@ pub fn spawn_sweep_loops<Ev>(
                     }
                     _ = tick.tick() => {
                         for alert in sweep() {
-                            forward_alert(alert, None, None, &alerts_tx).await;
+                            let failed = counteract.as_ref().and_then(|c| c(&alert, None));
+                            for alert in std::iter::once(alert).chain(failed) {
+                                forward_alert(alert, None, None, &alerts_tx).await;
+                            }
                         }
                     }
                 }
