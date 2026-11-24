@@ -100,6 +100,31 @@ Guidance:
 - `evaluate` is sync and must not do I/O. Anything it needs comes from the parser output,
   the ctx, the config, or state seeded in `bootstrap`.
 
+### Reactors: rules fed by alerts
+
+A `ReactorRule` reacts to other rules' alerts (every program's) instead of chain events: an
+automated response such as building and simulating a pause transaction. The service's alert
+tap hands it each alert as the rule raises it, before the cooldown / fleet gates and the
+sinks' batching, then forwards the alert unchanged.
+
+```rust
+#[async_trait]
+impl ReactorRule for MyReactor {
+    const ID: RuleId = RuleId::new(crate::PROGRAM, "my_reactor");
+    type Config = MyReactorConfig;
+    fn build(cfg: Self::Config, deps: &Deps) -> anyhow::Result<Self> { .. }
+    // bootstrap / refresh_interval + refresh: pre-build what the hot path needs
+    fn accepts(&self, alert: &Alert) -> bool { alert.metadata.get("action").is_some_and(|a| a == "L1") }
+    async fn react(&self, alert: Alert, ctx: ReactCtx) -> Vec<Alert> { .. } // own task per alert
+}
+```
+
+Register it with `.reactor::<MyReactor>()` in `spec()` and configure it in the rules file like
+any rule; its alerts are routed by its own `[[rules]]` entry (sinks, cooldown). `accepts` runs on
+the alert path for every alert, so keep it a metadata check. A reactor never sees its own
+alerts and its output is not fed back to reactors. The copy it gets carries no slot hold
+(`ctx.trigger_slot` has the slot), so a slow reaction does not hold the replay checkpoint.
+
 ## Add a program
 
 A program crate is `lib.rs` with `PROGRAM` and `spec()`, a parser (a codama parser via
